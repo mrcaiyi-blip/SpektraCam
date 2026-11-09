@@ -1,0 +1,164 @@
+#version 450
+// Joint RGB reconstruction + both-green-phase DPC. No chroma/median filter.
+// Four synchronized passes over 128-row strips, with an 8-row dependency halo.
+// Scratch fields use disjoint scalar addresses; no in-place vec4 read/write race.
+layout(local_size_x=16, local_size_y=16) in;
+layout(set=0,binding=0,std430) readonly buffer RawInput {uint raw[];};
+layout(set=0,binding=3,std430) writeonly buffer CameraCache {uint cameraCache[];};
+layout(set=0,binding=6,std430) buffer ScratchA {float scratchA[];};
+layout(set=0,binding=7,std430) buffer ScratchB {float scratchB[];};
+layout(push_constant) uniform Strip {uint stage; uint startY; uint rows; uint coreStartY;} strip;
+layout(set = 0, binding = 5, std140) uniform RawParameters {
+    uint width;
+    uint height;
+    float blackLevel;
+    float whiteLevel;
+    float blackLevel00;
+    float blackLevel01;
+    float blackLevel10;
+    float blackLevel11;
+    uint cfaPattern;
+    uint reserved0;
+    float whiteBalanceR;
+    float whiteBalanceGEven;
+    float whiteBalanceGOdd;
+    float whiteBalanceB;
+    float padding;
+    uint colorCorrectionMatrixAvailable;
+    float colorCorrectionM00;
+    float colorCorrectionM01;
+    float colorCorrectionM02;
+    float colorCorrectionM10;
+    float colorCorrectionM11;
+    float colorCorrectionM12;
+    float colorCorrectionM20;
+    float colorCorrectionM21;
+    float colorCorrectionM22;
+} pc;
+
+
+uint colorAt(ivec2 p) {
+    uint x=uint(p.x)&1u,y=uint(p.y)&1u;
+    if(pc.cfaPattern==0u) return y==0u?(x==0u?0u:1u):(x==0u?1u:2u);
+    if(pc.cfaPattern==1u) return y==0u?(x==0u?1u:0u):(x==0u?2u:1u);
+    if(pc.cfaPattern==2u) return y==0u?(x==0u?1u:2u):(x==0u?0u:1u);
+    return y==0u?(x==0u?2u:1u):(x==0u?1u:0u);
+}
+ivec2 physical(ivec2 p) {return clamp(p,ivec2(0),ivec2(pc.width,pc.height)-1);}
+uint indexAt(ivec2 p) {
+    p=physical(p);
+    p.y=clamp(p.y,int(strip.startY),int(strip.startY+strip.rows)-1);
+    return uint(p.y-int(strip.startY))*pc.width+uint(p.x);
+}
+uint countPixels() {return pc.width*strip.rows;}
+float rawAt(ivec2 p) {
+    p=physical(p);
+    float black=(p.y&1)==0?((p.x&1)==0?pc.blackLevel00:pc.blackLevel01)
+                             :((p.x&1)==0?pc.blackLevel10:pc.blackLevel11);
+    return clamp((float(raw[uint(p.y)*pc.width+uint(p.x)])-black)/max(1.,pc.whiteLevel-black),
+                 0.,(pc.reserved0&16u)!=0u?8.:1.);
+}
+vec4 wbGains() {return clamp(vec4(pc.whiteBalanceR,pc.whiteBalanceGEven,pc.whiteBalanceGOdd,pc.whiteBalanceB),.1,8.);}
+float correctedRaw(ivec2 p) {
+    float v=rawAt(p);
+    vec4 sides=vec4(rawAt(p+ivec2(-2,0)),rawAt(p+ivec2(2,0)),rawAt(p+ivec2(0,-2)),rawAt(p+ivec2(0,2)));
+    float lo=min(min(sides.x,sides.y),min(sides.z,sides.w));
+    float hi=max(max(sides.x,sides.y),max(sides.z,sides.w));
+    float mean=dot(sides,vec4(.25));
+    if(colorAt(p)==1u) {
+        vec4 wb=wbGains();
+        float ratio=(p.y&1)==0?wb.z/wb.y:wb.y/wb.z;
+        vec4 other=ratio*vec4(rawAt(p+ivec2(-1,-1)),rawAt(p+ivec2(1,-1)),rawAt(p+ivec2(-1,1)),rawAt(p+ivec2(1,1)));
+        lo=min(lo,min(min(other.x,other.y),min(other.z,other.w)));
+        hi=max(hi,max(max(other.x,other.y),max(other.z,other.w)));
+        mean=.5*(mean+dot(other,vec4(.25)));
+    }
+    float hot=smoothstep(.055,.14,v-hi)*(1.-.65*smoothstep(.18,.52,hi));
+    float cold=smoothstep(.055,.14,lo-v)*(1.-smoothstep(.32,.74,mean));
+    return mix(v,mean,clamp(max(hot,cold),0.,1.));
+}
+float cfaAt(ivec2 p) {return scratchA[indexAt(p)];}
+float greenAt(ivec2 p,uint direction) {
+    uint i=indexAt(p)+countPixels();
+    return direction==0u?scratchA[i]:scratchB[i-countPixels()];
+}
+vec3 candidate(ivec2 p,uint direction) {
+    p=physical(p);
+    float g=greenAt(p,direction),v=cfaAt(p);
+    uint channel=colorAt(p);
+    vec3 rgb=vec3(0.,g,0.);
+    const ivec2 offsets[8]=ivec2[8](ivec2(-1,0),ivec2(1,0),ivec2(0,-1),ivec2(0,1),
+                                   ivec2(-1,-1),ivec2(-1,1),ivec2(1,-1),ivec2(1,1));
+    for(uint c=0u;c<=2u;c+=2u) {
+        if(channel==c) {rgb[c]=v;continue;}
+        float total=0.;uint n=0u;
+        int first=channel==1u?0:4,last=channel==1u?4:8;
+        for(int k=first;k<last;++k) {
+            ivec2 q=physical(p+offsets[k]);
+            if(colorAt(q)==c) {total+=cfaAt(q)-greenAt(q,direction);++n;}
+        }
+        rgb[c]=g+total/float(max(n,1u));
+    }
+    return rgb;
+}
+float labF(float x) {return x>.00885645168?pow(x,1./3.):x/(3.*(6./29.)*(6./29.))+4./29.;}
+vec3 lab(ivec2 p,uint direction) {
+    vec3 rgb=candidate(p,direction);
+    if(pc.colorCorrectionMatrixAvailable!=0u) {
+        rgb=vec3(dot(rgb,vec3(pc.colorCorrectionM00,pc.colorCorrectionM01,pc.colorCorrectionM02)),
+                 dot(rgb,vec3(pc.colorCorrectionM10,pc.colorCorrectionM11,pc.colorCorrectionM12)),
+                 dot(rgb,vec3(pc.colorCorrectionM20,pc.colorCorrectionM21,pc.colorCorrectionM22)));
+    }
+    // Unclipped working RGB: negative values must not hide a bad color ratio.
+    vec3 xyz=vec3(dot(rgb,vec3(.4124564,.3575761,.1804375))/.95047,
+                  dot(rgb,vec3(.2126729,.7151522,.0721750)),
+                  dot(rgb,vec3(.0193339,.1191920,.9503041))/1.08883);
+    vec3 f=vec3(labF(xyz.x),labF(xyz.y),labF(xyz.z));
+    return vec3(116.*f.y-16.,500.*(f.x-f.y),200.*(f.y-f.z));
+}
+vec2 difference(vec3 a,vec3 b) {vec3 d=a-b;return vec2(abs(d.x),dot(d.yz,d.yz));}
+void main() {
+    uvec2 local=gl_GlobalInvocationID.xy;
+    if(local.x>=pc.width || local.y>=strip.rows) return;
+    ivec2 p=ivec2(local.x,local.y+strip.startY);
+    uint i=local.y*pc.width+local.x,n=countPixels();
+    if(strip.stage==0u) {
+        vec4 wb=wbGains();uint c=colorAt(p);
+        float gain=c==0u?wb.x:c==2u?wb.w:(p.y&1)==0?wb.y:wb.z;
+        scratchA[i]=correctedRaw(p)*gain;
+    } else if(strip.stage==1u) {
+        float center=cfaAt(p);
+        for(uint d=0u;d<2u;++d) {
+            ivec2 step=d==0u?ivec2(1,0):ivec2(0,1);
+            float left=cfaAt(p-step),right=cfaAt(p+step);
+            float g=colorAt(p)==1u?center:clamp(.5*(left+right)+.25*(2.*center-cfaAt(p-2*step)-cfaAt(p+2*step)),min(left,right),max(left,right));
+            if(d==0u) scratchA[n+i]=g;else scratchB[i]=g;
+        }
+    } else if(strip.stage==2u) {
+        const ivec2 offsets[4]=ivec2[4](ivec2(-1,0),ivec2(1,0),ivec2(0,-1),ivec2(0,1));
+        vec3 h=lab(p,0u),v=lab(p,1u);
+        vec3 hn[4],vn[4];
+        for(int k=0;k<4;++k) {hn[k]=lab(p+offsets[k],0u);vn[k]=lab(p+offsets[k],1u);}
+        vec2 limit=min(max(difference(hn[0],h),difference(hn[1],h)),max(difference(vn[2],v),difference(vn[3],v)))+vec2(.0001);
+        uint hs=0u,vs=0u;
+        for(int k=0;k<4;++k) {
+            if(all(lessThanEqual(difference(hn[k],h),limit))) ++hs;
+            if(all(lessThanEqual(difference(vn[k],v),limit))) ++vs;
+        }
+        scratchB[n+i]=uintBitsToFloat(hs|(vs<<8u));
+    } else {
+        if(uint(p.y)<strip.coreStartY || uint(p.y)>=min(pc.height,strip.coreStartY+128u)) return;
+        uint hs=0u,vs=0u;
+        for(int dy=-1;dy<=1;++dy) for(int dx=-1;dx<=1;++dx) {
+            uint scores=floatBitsToUint(scratchB[n+indexAt(p+ivec2(dx,dy))]);
+            hs+=scores&255u;vs+=(scores>>8u)&255u;
+        }
+        vec3 rgb=hs>vs?candidate(p,0u):hs<vs?candidate(p,1u):.5*(candidate(p,0u)+candidate(p,1u));
+        rgb[colorAt(p)]=cfaAt(p);
+        vec4 wb=wbGains();
+        rgb=clamp(rgb/vec3(wb.x,.5*(wb.y+wb.z),wb.w),0.,8.);
+        uint outIndex=((uint(p.y)-strip.coreStartY)*pc.width+uint(p.x))*2u;
+        cameraCache[outIndex]=packHalf2x16(rgb.rg);
+        cameraCache[outIndex+1u]=packHalf2x16(vec2(rgb.b,0.));
+    }
+}

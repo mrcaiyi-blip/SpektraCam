@@ -1,0 +1,3 @@
+"NSCameraUsageDescription" = "拍摄单张 Bayer RAW 胶片照片。";
+"NSPhotoLibraryUsageDescription" = "删除时访问本应用保存到系统相册的照片。";
+"NSPhotoLibraryAddUsageDescription" = "将显影后的胶片照片保存到系统相册。";

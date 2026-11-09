@@ -1,0 +1,3 @@
+"NSCameraUsageDescription" = "Take single-exposure Bayer RAW film photos.";
+"NSPhotoLibraryUsageDescription" = "Access the system photo library to delete copies saved by SpektraCam.";
+"NSPhotoLibraryAddUsageDescription" = "Save developed film photos to the system photo library.";

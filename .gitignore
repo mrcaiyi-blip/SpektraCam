@@ -1,0 +1,14 @@
+.DS_Store
+/build/
+/out/
+/assets/support-links.local.json
+**/build/
+.gradle/
+local.properties
+__pycache__/
+*.xcuserstate
+xcuserdata/
+
+.cxx/
+.kotlin/
+.idea/

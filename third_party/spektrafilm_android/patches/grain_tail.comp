@@ -1,0 +1,35 @@
+// LutCam final grain subtraction/FIR; GPL-3.0-only.
+#version 450
+layout(local_size_x=64) in;
+layout(std430,binding=0) readonly buffer Accum {float accum[];};
+layout(std430,binding=1) buffer Scratch {float scratch[];};
+layout(std430,binding=2) writeonly buffer Output {float dst[];};
+layout(push_constant,std430) uniform Params {
+    uint width;uint height;uint npix;uint groupsX;
+    uint mode;int radius;float sub[3];float weights[9];
+} p;
+int reflected(int q,int n) {
+    if(n==1)return 0;
+    int t=q%(2*n);if(t<0)t+=2*n;
+    return t<n?t:2*n-1-t;
+}
+void main() {
+    uint i=(gl_WorkGroupID.y*p.groupsX+gl_WorkGroupID.x)*64+gl_LocalInvocationID.x;
+    if(i>=p.npix)return;
+    // Match the original grain upload's finite-or-zero rule before sampling.
+    // Stock curve tables contain missing values; they must not reach clamp(NaN).
+    if(p.mode==2) {
+        for(uint k=0;k<9;k++){float v=scratch[i*9+k];scratch[i*9+k]=(isnan(v)||isinf(v))?0.0:v;}
+        return;
+    }
+    int x=int(i%p.width),y=int(i/p.width);
+    for(uint ch=0;ch<3;ch++) {
+        precise float sum=0;
+        for(int k=-p.radius;k<=p.radius;k++) {
+            uint j=p.mode==0?uint(reflected(y+k,int(p.height)))*p.width+uint(x):uint(y)*p.width+uint(reflected(x+k,int(p.width)));
+            float v=p.mode==0?accum[j*3+ch]-p.sub[ch]:scratch[j*3+ch];
+            sum+=p.weights[k+p.radius]*v;
+        }
+        if(p.mode==0)scratch[i*3+ch]=sum;else dst[i*3+ch]=sum;
+    }
+}

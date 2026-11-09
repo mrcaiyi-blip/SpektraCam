@@ -1,0 +1,332 @@
+LutCam Spektrafilm integration
+
+Upstream Android engine: https://github.com/thetechgeekko/Spektrafilm-android
+Commit: 15fb120996f03fc1e58a9a9d819e335f65d7a092
+Film modeling powered by spektrafilm (Andrea Volpato):
+https://github.com/andreavolpato/spektrafilm
+
+Engine C++ sources (including embedded Vulkan shaders) and 28 material profiles
+were copied unchanged. UPSTREAM_SHA256.json records the copied source hashes.
+The outer CMakeLists.txt integrates a static engine with LutCam's own JNI bridge;
+the upstream editor JNI, tests, codecs, ICC files, optional Highway/TBB dependencies
+and the upstream editor application are not used. The original NOTICE.md and
+LICENSE are retained verbatim; references there to omitted components describe
+the upstream application, not additional libraries linked into LutCam.
+
+LutCam additions: camera display-RGB decoding/colour adaptation, fixed film/print
+pairings, offline LUT preview, and full-resolution RAW photo export. The native
+pinned engine files remain unchanged on disk. The executable is locally modified
+by the checked build overlays in third_party/spektrafilm_android/patches/.
+CMake requires Python 3 (standard library only), verifies the original hashes and
+shader checksums, then generates the six modified translation units in the build
+directory. The source distribution includes overlays, GLSL, embedded SPIR-V and
+the shader generator. Preview assets are derived with the upstream
+spk_bake_cube_lut API, shaper=1, and converted from blue-fast to red-fast PLUT v1.
+Each of 20 looks has a 65^3 RGB16 LUT. The camera OES shader decodes its SDR
+transfer/primaries, converts to linear ProPhoto D50, then applies the sRGB OETF
+per channel as the LUT's input shaper. Output is encoded sRGB. OES sampling has
+already expanded YUV range. Preview needs no CPU frame readback or full model.
+
+The bake keeps the pointwise spectral/density/print/scan transform; grain,
+halation/scatter, DIR spatial diffusion, glare and scanner unsharp are excluded
+by the upstream API. Camera AE has already acted, so no model AE is baked in.
+The manifest and SHA256SUMS.json record pairing, engine commit, checksums and
+4096 off-grid samples per look. Normalized encoded-RGB interpolation RMSE ranges
+0.00131-0.00249, with worst individual channel errors up to 0.0752 over the full
+ProPhoto input cube. This is a preview approximation, not a full-effect render.
+
+Photos develop the full captured RAW using black/LSC correction, demosaic,
+white balance, camera CCM and Bradford adaptation to linear ProPhoto D50.
+An explicitly owned native float32 RGB buffer preserves HDR values above 1 and is borrowed by the serialized film worker under its owner lock. The product capture path moves the ISP vector, runs the same full model, fills an RGBA_8888 Bitmap directly and closes the input owner on success or exception. It does not write/read LCRF or RGB8 intermediates. Debug capture may additionally save LCRF; LCRF v1 remains the diagnostic replay format. No prior ISP display
+tone curve, classic LUT, gamma or 8-bit intermediate is applied. The full native
+simulation entry is used with gpu_export enabled, one model auto-exposure
+normalization, all default grain, halation/scatter, DIR diffusion, printing and
+glare retained. Optional creative filters retain upstream defaults (off).
+LutCam then quantizes directly into Bitmap pixels and rotates/crops/encodes the JPEG. LUT preview continues during
+saving. Original preview-snapshot photo export has been removed.
+
+The full photo graph is CPU/Vulkan hybrid, with upstream per-stage self-checks
+and CPU fallback, not an entirely GPU-resident pipeline. DIR diffusion precludes
+the upstream resident pointwise chain but independent GPU stages still engage.
+GPU grain/glare samplers may produce a different stochastic realization. No
+spatial stage or photo resolution is reduced to qualify for a GPU path.
+
+Earlier baseline HONOR BKQ_AN10 qualification: all 20 1920x1440 live LUT previews ran around 30 fps.
+The camera-frame/window-submission cadence is a short-window throughput measure,
+not panel presentation time or sensor-to-screen latency. A 512x384 HDR fixture
+with stochastic grain/glare disabled gave CPU/Vulkan RGB RMSE 1.89e-7 and maximum
+4.31e-6; it does not establish pixel identity for stochastic full photos.
+A Portra 800 RAW 4096x3072 produced a portrait 3072x4096 JPEG, 36 Vulkan submissions,
+7317ms model wall time and 7691ms native/file-I/O call time after qualification
+warmup. Earlier CPU processing took 10781ms on a different frame, so this is not
+a strict same-RAW A/B or total shutter-to-gallery benchmark. Display preview and
+RAW photo exposure/tone still need reference calibration. Other devices,
+orientations, front camera and sustained thermal behaviour are unqualified.
+
+Earlier memory-handoff benchmark (same device, same saved 4096x3072 RAW development,
+same full Portra 800 GPU-export parameters): the ISP file and memory float32
+planes matched bit-for-bit. After warmup, four measured runs per route in
+ABBA/BAAB order gave median 4824ms legacy file transport versus 4335ms native
+memory-to-Bitmap, a 10.1% reduction. All rendered RGB8 pixels matched exactly;
+the source hash remained unchanged, double-close was harmless, and a closed
+owner rejected rendering. Timings start from a shared resident RAW-linear plane
+and end at Bitmap; RAW development, initialization, rotation/crop, JPEG and gallery
+are excluded. The common input remains resident for repeated legacy comparisons.
+Temperature/background load were not controlled; this is not a shutter latency
+or cross-device guarantee. Native diagnostics now expose transport/packing and
+internal grain phases, GPU grain engagement/refusal and GPU FFT counts. The
+fixture's grain sampler engaged the GPU; intermediate layer/blur traffic remains
+an optimization opportunity. Actual live memory-capture qualification is recorded
+separately in the accompanying validation report.
+
+Earlier live memory-capture regression passed all 20 LUT selections and classic/none.
+One 4096x3072 RAW -> 3072x4096 portrait JPEG took 5652ms from test shutter to
+observed saved result: RAW capture/development 623ms, full film-to-Bitmap 4491ms,
+RAW-to-Bitmap 5114ms, with JPEG/gallery afterwards. Engine initialization had
+already been warmed by the CPU/GPU qualification fixture. The full film graph
+made 36 Vulkan submissions; default spatial/stochastic effects were retained.
+Distinct OES timestamps and successful window submissions continued during film
+processing (23.9fps over one 2-second window); median of the 20 look-selection
+windows was 30.2fps. These are single-device short-window observations, not a
+stable shutter-latency, panel timing or sustained-performance guarantee.
+
+2026-10-22 local scan-tail optimization: the common default encoded-sRGB scanner
+exit combines additive glare, reflected separable FIR, unsharp mixing, the existing
+CAT02 round-trip matrix and encoding/clipping in two dispatches and one submission.
+This removes the full-size f64 scan plane and unsharp copy. Spectral scan still
+returns f32 to the host before the tail upload; this is not full GPU residency.
+The overlay also corrects buffer-before-bound-memory destruction order. Existing
+model effects and resolution are retained. Unsupported custom settings, storage
+limits, allocation failures or on-device reference-check failures retain the
+previous tail. See patches/README.md for the exact eligibility and shader rebuild.
+
+Same-device, same 4096x3072 RAW-linear Portra 800 full-model comparison, native
+memory transport for both routes, four measured runs each after warmup in ABBA/
+BAAB order: median to-Bitmap 5504ms -> 4904ms (10.9% reduction), scan 1099ms ->
+522ms (52.5%), scan_spatial 780ms -> 297ms. Full-model submissions 36 -> 30.
+All 20 complete-model profile comparisons engaged the new tail; maximum float
+error 4.83e-7, full-RAW RGB8 maximum difference 1. Unsupported/nonfinite inputs
+were rejected without overwriting output. The f32 tail is tolerance bounded,
+not byte-identical to the previous f64 spatial operations. These timings exclude
+RAW development, initialization, rotation/crop, JPEG/gallery; temperature and
+background load were not controlled. No cross-device or sustained guarantee.
+This benchmark supersedes prior historical measurements for the scanner change;
+do not compare unrelated historical inputs as a strict performance A/B.
+
+Current live regression passed all 20 previews and classic/none. The optimized
+tail engaged, 4096x3072 RAW saved as 3072x4096 JPEG, with 30 full-model Vulkan
+submissions. Observed shutter-to-JPEG was 8754ms: RAW capture/development 1235ms,
+film-to-Bitmap 6652ms; preview continued at 29.9fps in one processing window.
+This different live input/load is not the controlled A/B and shows real latency
+still varies. The scene had no reliable orientation/detail reference: visual
+inspection confirms portrait proportions/no obvious stripes, not orientation
+calibration or fine-detail quality. Engine was warmed by qualification.
+
+2026-10-22 second performance pass: resident grain layers, finite-or-zero layer
+sanitization, the original particle shader, density_min subtraction and final
+reflected FIR run in five dispatches/one submission. Original layer and particle
+SPIR-V, RNG, seeds, cell derivation, dye-cloud taps and normal-branch policy are
+unchanged. Stock tables carry missing values; sanitization matches the previous
+host upload. The nine-channel device scratch is reused for the vertical FIR
+with read-to-write ordering after sampling. At 4096x3072 this removes the 432MiB
+host layer allocation and 864MiB layer readback-plus-upload; 432MiB device scratch
+is still required. The scan tail also parallelizes finite checks/staging copies,
+without changing arithmetic. Unsupported micro-structure/wide kernels, explicit
+SPK_GPU_BLUR=0, device limits or self-check failure retain the old complete path.
+
+The first-use real-profile check compares old GPU stages and branch counts with
+the resident chain. All 20 full-model fixtures engage, max float error 8.22e-6,
+RGB8 max 1; full-resolution same-RAW RGB8 max also 1. Invalid/unsupported requests
+leave caller output unchanged. This is not CPU/GPU stochastic pixel identity.
+Same fixed 4096x3072 RAW, four measured runs each after warmup, ABBA/BAAB, first
+scan-tail shader active on both routes: median to-Bitmap 4092ms -> 3649ms (10.8%),
+grain 486ms -> 130ms (73.2%), scan 349ms -> 275ms (21.4%). Scan upload 70 -> 28ms,
+readback/check/copy 61 -> 29ms. Timing excludes RAW development, initialization,
+rotation/crop, JPEG/gallery. Different sessions have different load/temperature;
+compare this interleaved A/B only, not earlier historical absolute timings.
+The original particle shader's omitted submission counter is corrected in the
+generated overlay; historical submission counts are not directly comparable.
+Full effects and photo dimensions remain unchanged. See patches/README.md and
+the accompanying validation report for scope, shaders and exact measurements.
+
+Final second-pass live regression passed all 20 LUT selections and classic/none,
+plus one real Portra 800 capture: RAW 4096x3072 -> JPEG 3072x4096. Resident grain
+and parallel scan transfer both engaged. Observed shutter-to-JPEG 5153ms, RAW
+capture/development 643ms, film-to-Bitmap 4019ms, RAW-to-Bitmap 4662ms. Processing
+preview window 23.4fps, median selection window 30.2fps (throughput, not panel
+latency). The output was inspected for orientation/proportion/obvious stripes;
+no calibrated colour/detail target was present. Engine warmed by qualification.
+This different live frame is not a stable latency or cross-scene speed guarantee.
+
+2026-10-22 third performance pass: the GPU print integral's CPU tail evaluates
+the two existing clamp/floor seams directly in f64, avoiding a full 288MiB f64
+plane and redundant log10/pow10 work at 4096x3072. Midgray, preflash, exposure and
+B/W corrections remain; active enlarger optical diffusion keeps the old route.
+DIR retains f64 curve construction/matrix/interpolation, but its correction and
+diffused host planes are f32 at the SAME conversion seams used by the existing
+GPU path. This removes 288MiB of host scratch at that stage. These savings are
+per-stage, not a combined process-peak claim. The CPU oracle is unchanged.
+
+A local spatial shader assigns independent (column,channel) IIR lanes instead of
+sequential channels in a thread. Original double-float/Dekker arithmetic, f64
+coefficients, FIR, boundaries and blending remain. A first-use paired comparison
+checks mixed FIR/IIR on odd geometry and sigma 3/12/63/256 before enabling it;
+failure or unsupported additional dispatch range retains the original pipeline.
+Source notices, GLSL, SPIR-V, generator and checksums are included. An experimental
+native FMA residual failed the device primitive check and is not shipped.
+All default effects/full photo resolution remain; this is still CPU/Vulkan hybrid.
+
+Third-pass final fixed-RAW A/B: both routes keep the prior two optimizations,
+only the three new changes are toggled. Same HONOR 4096x3072 RAW-linear plane,
+one warmup per route, four measured each in ABBA/BAAB: to-Bitmap median 4242 ->
+3125ms (26.3%); halation 851 -> 600ms, DIR 919 -> 549ms, print 686 -> 289ms.
+All 20 full-model fixtures had zero float/RGB8 difference; full-resolution RAW
+RGB8 max difference was also zero. This is measured agreement for these inputs,
+not universal floating-point bit identity. Excludes RAW development, initialization,
+rotation, JPEG/gallery. Temperature/background load were not controlled; do not
+calculate cumulative gains from historical sessions' absolute times.
+
+Third-pass live regression passed 20 previews and classic/none, plus one Portra
+800 RAW 4096x3072 -> 3072x4096 JPEG. All three new stages engaged. Observed first
+shutter-to-JPEG 7643ms, RAW capture/development 1290ms, film-to-Bitmap 5525ms;
+processing preview window 29.5fps, selection median 30.2fps. Portrait proportions,
+orientation and obvious stripes were inspected, without a calibration target.
+First full-frame preparation, scene and device load differ from the warmed A/B;
+the extra repeated-shot test stopped when the phone switched to another app.
+No stable repeated-shot latency result is claimed. Engine warmed by qualification.
+
+Engine GPLv3 and profile licenses/notices are bundled under assets/legal/spektrafilm
+and shown in the Film tab. The source snapshot accompanying the debug APK contains
+the Android build sources, integration, profiles and license material.
+
+
+2026-10-22 fourth performance pass: the scanner borrows completed resident grain
+buffers, with separate device input, mapped output and scratch, explicit transfer
+usage/barriers and the same fence/mutex. At 4096x3072 this avoids growing three
+additional 144MiB scan buffers (432MiB capacity, not an OS RSS measurement). The
+glare buffer remains private. Unsupported/nonresident cases retain old storage.
+Shaders and scan arithmetic are unchanged. AE preview sampling now caches integer
+reflected tap indices and distributes independent pixels among workers, retaining
+all original f64 per-pixel sums, coefficients, sample coordinates and AE policy.
+The original small preview, full-resolution photo and all effects remain.
+
+Same fixed RAW, full Portra 800, previous three passes active on both routes:
+eight fresh processes in ABBA/BAAB order, first full-size render and immediate
+warm repeat each. Model-to-Bitmap median 3157 -> 2894ms cold (8.3%), 2566 -> 2325ms
+warm (9.4%). All 16 RGB8 hashes matched; all 20 smaller complete-model fixtures
+had zero float/RGB8 error. Host 1/4-worker AE tests also retained EV/sample bits.
+Observed agreement is not universal floating-point identity. Excludes engine
+creation, fixture loading, RAW development, rotation/JPEG/gallery. Background
+activity and temperature were not controlled; these are single-device results.
+Save diagnostics separately time transform, JPEG, gallery and thumbnail phases.
+The accompanying performance-v4 APK uses com.example.rawsoftwareisp.performance,
+label LutCam 性能版, for parallel installation; the default source build ID is
+unchanged, so pass the documented Gradle properties to reproduce this package.
+
+Fourth-pass live regression passed all 20 previews and classic/none, full Portra
+800, RAW 4096x3072 -> JPEG 3072x4096. New stages engaged. Observed first shutter
+to saved result 5440ms: RAW capture/development 1169ms, film-to-Bitmap 3565ms,
+transform 305ms, JPEG 228ms, gallery 87ms, thumbnail 8ms. Processing preview window
+24.4fps (camera/window throughput, not display latency). Portrait proportions,
+orientation and obvious stripes inspected; no calibrated detail/colour target.
+Engine warmed with small qualification fixtures; first full-size live capture.
+This separate scene/load is not a historical shutter-latency A/B or stable bound.
+
+
+2026-10-22 fifth performance pass: partial resident expose -> complete halation/
+scatter -> exposure-log chain, using original shader bytes and f32 seams. One
+GPU mutex covers the sequence, descriptor front changes and memory barriers.
+Only successful finite readback publishes caller pixels; every exit closes the
+resident frame. A first-use small old/new comparison gates the optimization.
+Unsupported creative settings keep the complete original route. Two 288MiB host
+f64 transient planes are avoided at 12MP; new resident buffers/staging also use
+capacity, so this is not a net process-peak/RSS claim. The whole graph remains
+CPU/Vulkan hybrid, with all effects and full resolution.
+
+Final RGB8 packing now uses parallel disjoint 32x32 tiles, fusing the existing
+post-film digital crop and integer orientation into the same pass. Quantization,
+alpha, crop dimensions and JPEG quality remain unchanged. It avoids the separate
+Java rotation and extra Bitmap. Classic output is unchanged. Host tests cover
+all four angles with independently enumerated cropped pixel labels, row padding,
+invalid crop and parallel packing versus the original quantization.
+
+Same fixed RAW, previous four passes active on both sides, eight fresh processes
+in ABBA/BAAB order, first full-size render + warm repeat each. End at equivalent
+3072x4096 portrait Bitmap: baseline includes original Java rotation, new route
+packs directly. First-render median 3478 -> 3138ms (9.8%); warm 2536 -> 2023ms
+(20.2%). Warm model invocation 2206 -> 1976ms, native output 75 -> 31ms. All 16
+RGB8 hashes matched; all 20 complete-model fixtures had zero float/RGB8 error.
+Failure output preservation, recovery, f64 input/alias checks pass. Excludes engine
+initialization, fixture loading, RAW development and JPEG/gallery. Temperature
+and background activity uncontrolled; observed agreement is not universal float
+identity. A smaller IIR workgroup experiment had no stable extra gain and is not
+shipped. The full engine's spatial filters remain a main bottleneck.
+
+Live regression: all 20 previews and classic/none passed. RAW 4096x3072 -> JPEG
+3072x4096; partial residency and fused output engaged. Observed first shutter to
+saved result 3937ms, RAW capture/development 668ms, film-to-oriented-Bitmap 2868ms,
+JPEG 176ms, gallery 84ms, thumbnail 10ms. Processing preview window 21.2fps,
+selection median 30.2fps (throughput, not display latency). Portrait orientation,
+proportions and obvious stripes inspected without a colour/detail target. Engine
+warmed with small qualification fixtures, first full-size live capture. Separate
+scene/load; not a historical shutter-latency A/B or sustained guarantee.
+
+
+2026-10-22 sixth performance pass: mapped DIR transport reuses the already-ready
+resident frame pair/staging. The original f64 CPU silver/matrix correction writes
+straight into mapped input; the original complete diffusion executes, and the
+original f64 interpolation consumes mapped readback directly. Shader bytes, RNG,
+coefficients, interpolation and f32 conversion seams are unchanged. Two private
+144MiB f32 host vectors, their initialization and copies are avoided at 12MP
+(288MiB transient capacity, not an OS RSS measurement). No additional full-size
+buffer growth on this route; missing capacity keeps the previous complete path.
+
+GPU mutex/fences cover CPU callbacks and device work. Finite success is required
+before finish; every exit closes residency. CPU callback exceptions propagate to
+the renderer, never retry on partially written aliased output. Resident readback
+orders both transfer and shader writes. A first-use exact old/new transport check
+covers odd geometry, mixed FIR/IIR and sigma .65/3/12/63/256. Explicit tests cover
+nonfinite fill, GPU sigma refusal after upload, prepare/finish cancellation,
+frame closure and recovery against original diffusion. All 20 complete profiles
+had zero float/RGB8 difference; this remains observed-input agreement rather than
+a universal numeric or CPU/GPU stochastic identity claim.
+
+Same fixed 4096x3072 RAW-linear plane, all five previous passes on both sides,
+eight fresh processes ABBA/BAAB, first full-size and warm repeat each, equivalent
+3072x4096 portrait Bitmap: median cold 3141 -> 3027ms (3.6%), warm 2058 -> 1927ms
+(6.4%); warm DIR 463 -> 340ms (26.6%). All 16 RGB8 hashes matched. Excludes engine
+initialization, fixture loading, RAW development, JPEG/gallery. Temperature and
+background load uncontrolled. Existing preview/full-model effects/resolution and
+parallel package ID are retained; the whole graph is still CPU/Vulkan hybrid.
+Sixth-pass live regression passed all 20 lightweight previews and classic/none.
+Full Portra 800 RAW 4096x3072 -> JPEG 3072x4096, mapped DIR engaged, self-check
+error zero. Observed first shutter-to-saved result 4333ms: RAW capture/development
+664ms, film-to-oriented-Bitmap 3291ms, JPEG 160ms, gallery 77ms, thumbnail 9ms.
+Mapped DIR prepare/upload/diffusion/readback/finish: 16/8/269/18/31ms. Processing
+preview window 21.4fps, selection median 30.2fps (camera/window throughput, not
+panel latency). Portrait orientation/proportions and obvious stripes inspected,
+without calibrated detail/colour target. Engine warmed by small qualification
+fixtures; first full-size live capture. Separate scene/load; not a strict
+historical shutter-latency A/B or sustained performance guarantee.
+
+
+2026-10-22 seventh performance pass: transpose-only shared-memory padding from
+32x32 to a 32x33 row layout. Pixel indices/operations, original IIR/FIR math,
+coefficients, reflected boundaries, RNG and model settings remain unchanged.
+Only op 17 uses the additional pipeline; original complete route is retained.
+Process-once exact old/new diffusion qualification covers narrow/single axes,
+partial edge tiles, mixed FIR/IIR and sigma .65/2.999/12/256 before residency.
+GLSL/SPIR-V hashes and a fourth local shader generator are included.
+
+Two separate balanced eight-process ABBA/BAAB blocks, same 4096x3072 RAW-linear
+fixture, all six previous optimizations on both sides. Each process renders a
+first full-size portrait Bitmap then a warm repeat. All 32 RGB8 hashes matched;
+all 20 complete stock fixtures had zero float/RGB8 difference. Host integration
+and metering tests passed. Invalid/refusal/cancellation/recovery checks retained.
+First block warm 1816 -> 1756ms (3.3%); second 1704 -> 1699ms (0.3%). Pooled warm
+median 1771 -> 1738ms (1.9%); pooled GPU halation 344 -> 330ms and DIR 224 ->210ms.
+Pooled cold median 2728 -> 2785ms (2.1% slower), including new first-use checks.
+This is a small, variable warm gain, not a first-photo speedup or stable bound.
+No trials excluded. Temperature/background load uncontrolled on a single device.
+Excludes engine initialization, fixture loading, RAW development and JPEG/gallery.
+A shared FIR coefficient experiment showed less than 0.3% gain and is not shipped.

@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.22.1)
+project(SpektraCamAndroid LANGUAGES CXX)
+add_subdirectory(../../../.. core)
+add_library(spektracam_jni SHARED bridge.cpp)
+target_link_libraries(spektracam_jni PRIVATE spektracam_raw jnigraphics)
+target_link_options(spektracam_jni PRIVATE "-Wl,-z,max-page-size=16384")

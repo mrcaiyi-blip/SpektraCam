@@ -1,0 +1,52 @@
+// LutCam scan spatial/encode tail. GPL-3.0-only.
+#version 450
+layout(local_size_x=64) in;
+layout(set=0,binding=0,std430) readonly buffer Input {float src[];};
+layout(set=0,binding=1,std430) buffer Scratch {float temp[];};
+layout(set=0,binding=2,std430) writeonly buffer Output {float dst[];};
+layout(set=0,binding=3,std430) readonly buffer Glare {float glare[];};
+layout(push_constant,std430) uniform Params {
+    uint width;uint height;uint npix;uint mode;
+    float amount;int radius;uint hasGlare;uint groupsX;
+    float matrix[9];float glareColor[3];float weights[9];
+} p;
+int reflected(int q,int n) {
+    if(n==1)return 0;
+    int t=q%(2*n);if(t<0)t+=2*n;
+    return t<n?t:2*n-1-t;
+}
+float inputValue(uint i,uint c) {return src[i*3+c]+(p.hasGlare!=0?glare[i]*p.glareColor[c]:0.0);}
+float encode(float v) {
+    return clamp(v<=0.0031308?12.92*v:1.055*pow(v,1.0/2.4)-0.055,0.0,1.0);
+}
+void main() {
+    uint i=(gl_WorkGroupID.y*p.groupsX+gl_WorkGroupID.x)*64+gl_LocalInvocationID.x;
+    if(i>=p.npix)return;
+    int x=int(i%p.width),y=int(i/p.width);
+    if(p.mode==0) {
+        // Vertical FIR. The next dispatch reads this device-local scratch.
+        for(uint c=0;c<3;c++) {
+            precise float sum=0;
+            for(int k=-p.radius;k<=p.radius;k++) {
+                uint j=uint(reflected(y+k,int(p.height)))*p.width+uint(x);
+                sum+=p.weights[k+p.radius]*inputValue(j,c);
+            }
+            temp[i*3+c]=sum;
+        }
+    } else {
+        precise vec3 value;
+        for(uint c=0;c<3;c++) {
+            precise float blurred=0;
+            for(int k=-p.radius;k<=p.radius;k++) {
+                uint j=uint(y)*p.width+uint(reflected(x+k,int(p.width)));
+                blurred+=p.weights[k+p.radius]*temp[j*3+c];
+            }
+            float original=inputValue(i,c);
+            value[c]=original+p.amount*(original-blurred);
+        }
+        for(uint c=0;c<3;c++) {
+            precise float v=p.matrix[c*3]*value.r+p.matrix[c*3+1]*value.g+p.matrix[c*3+2]*value.b;
+            dst[i*3+c]=encode(v);
+        }
+    }
+}

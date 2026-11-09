@@ -1,0 +1,115 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer RawInput {
+    uint raw[];
+};
+
+layout(set = 0, binding = 1, std430) writeonly buffer OutputRgb {
+    float outputRgb[];
+};
+
+layout(set = 0, binding = 3, std430) readonly buffer RcdRgbCache {
+    uint rcdRgbCache[];
+};
+
+layout(push_constant) uniform Strip {uint stage; uint startY; uint rows; uint coreStartY;} strip;
+
+layout(set = 0, binding = 5, std140) uniform RawParameters {
+    uint width;
+    uint height;
+    float blackLevel;
+    float whiteLevel;
+    float blackLevel00;
+    float blackLevel01;
+    float blackLevel10;
+    float blackLevel11;
+    uint cfaPattern;
+    uint reserved0;
+    float whiteBalanceR;
+    float whiteBalanceGEven;
+    float whiteBalanceGOdd;
+    float whiteBalanceB;
+    float padding;
+    uint colorCorrectionMatrixAvailable;
+    float colorCorrectionM00;
+    float colorCorrectionM01;
+    float colorCorrectionM02;
+    float colorCorrectionM10;
+    float colorCorrectionM11;
+    float colorCorrectionM12;
+    float colorCorrectionM20;
+    float colorCorrectionM21;
+    float colorCorrectionM22;
+} pc;
+
+vec3 applyChromaBlend(vec3 rgb) {
+    if ((pc.reserved0 & 1024u) == 0u) return rgb;
+    vec3 wb = clamp(vec3(pc.whiteBalanceR,
+        0.5 * (pc.whiteBalanceGEven + pc.whiteBalanceGOdd), pc.whiteBalanceB), 0.1, 8.0);
+    float white = min(min(wb.r, wb.g), wb.b);
+    vec3 capped = min(rgb, vec3(white));
+    vec2 chroma = vec2(1.7320508 * (rgb.r - rgb.g), 2.0 * rgb.b - rgb.r - rgb.g);
+    vec2 cappedChroma = vec2(1.7320508 * (capped.r - capped.g),
+                            2.0 * capped.b - capped.r - capped.g);
+    float energy = dot(chroma, chroma);
+    float factor = energy > 1e-20 ? sqrt(clamp(dot(cappedChroma, cappedChroma) / energy, 0.0, 1.0)) : 1.0;
+    float meanRgb = (rgb.r + rgb.g + rgb.b) / 3.0;
+    return vec3(meanRgb) + factor * (rgb - vec3(meanRgb));
+}
+
+// OpcodeList3 applies after demosaic; never rewrites captured CFA/confidence.
+float dngStage3VignetteGainAt(ivec2 q) {
+    uint n=pc.width*pc.height;
+    uint base=n;
+    vec2 center=vec2(uintBitsToFloat(raw[base+5u]),uintBitsToFloat(raw[base+6u]))*vec2(pc.width,pc.height);
+    float aspect=uintBitsToFloat(raw[base+7u]);
+    vec2 far=max(center,vec2(pc.width,pc.height)-center); far.y/=aspect;
+    vec2 delta=vec2(q)+vec2(0.5)-center; delta.y/=aspect;
+    float r2=dot(delta,delta)/dot(far,far);
+    float sum=0.0;
+    for (int i=4;i>=0;--i) sum=r2*(uintBitsToFloat(raw[base+uint(i)])+sum);
+    return 1.0+sum;
+}
+
+vec3 demosaicAt(ivec2 p) {
+    ivec2 q = clamp(p, ivec2(0), ivec2(int(pc.width) - 1, int(pc.height) - 1));
+    uint index = (uint(q.y) - strip.coreStartY) * pc.width + uint(q.x);
+    vec2 rg = unpackHalf2x16(rcdRgbCache[index * 2u]);
+    vec2 b0 = unpackHalf2x16(rcdRgbCache[index * 2u + 1u]);
+    // New stage-3 diagnostics share the final renderer's existing HDR source
+    // range. The absent-opcode camera/model preparation remains byte-identical.
+    float cacheLimit=(pc.reserved0 & 16u)!=0u ? 8.0 : 1.25;
+    vec3 rgb=clamp(vec3(rg, b0.x), vec3(0.0), vec3(cacheLimit));
+    if ((pc.reserved0 & 256u)!=0u) return rgb*dngStage3VignetteGainAt(q);
+    return rgb;
+}
+
+void main() {
+    if (gl_GlobalInvocationID.y >= strip.rows) return;
+    ivec2 p = ivec2(gl_GlobalInvocationID.x, gl_GlobalInvocationID.y + strip.coreStartY);
+    if (p.x >= int(pc.width) || p.y >= int(pc.height)) {
+        return;
+    }
+
+    vec3 rgb = demosaicAt(p);
+    // Cache stores camera-linear samples with WB undone after reconstruction.
+    rgb*=clamp(vec3(pc.whiteBalanceR,0.5*(pc.whiteBalanceGEven+pc.whiteBalanceGOdd),pc.whiteBalanceB),0.1,8.0);
+    rgb=applyChromaBlend(rgb);
+    if (pc.colorCorrectionMatrixAvailable!=0u) {
+        rgb=vec3(dot(rgb,vec3(pc.colorCorrectionM00,pc.colorCorrectionM01,pc.colorCorrectionM02)),
+                 dot(rgb,vec3(pc.colorCorrectionM10,pc.colorCorrectionM11,pc.colorCorrectionM12)),
+                 dot(rgb,vec3(pc.colorCorrectionM20,pc.colorCorrectionM21,pc.colorCorrectionM22)));
+    }
+    // Linear sRGB D65 -> linear ProPhoto D50 with Bradford adaptation.
+    // Keep out-of-sRGB components through the matrix and retain HDR values >1.
+    rgb=vec3(dot(rgb,vec3(0.529388470712,0.330231217730,0.140627167763)),
+             dot(rgb,vec3(0.098305088514,0.873483901238,0.028146056090)),
+             dot(rgb,vec3(0.016851063808,0.117696843742,0.865673268566)));
+
+    uint base = (gl_GlobalInvocationID.y * pc.width + uint(p.x)) * 3u;
+    outputRgb[base + 0u] = max(rgb.r, 0.0);
+    outputRgb[base + 1u] = max(rgb.g, 0.0);
+    outputRgb[base + 2u] = max(rgb.b, 0.0);
+}
