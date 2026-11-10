@@ -32,6 +32,35 @@ import java.util.Map;
 final class CaptureGalleryStore {
     private static final String MEDIA_FOLDER = "DCIM/SpektraCam/";
     private static final String FILE_PREFIX = "SpektraCam_";
+    private static volatile LatestPreview latestPreview;
+
+    static final class LatestPreview {
+        final Photo photo;
+        final Bitmap bitmap;
+
+        LatestPreview(Photo photo, Bitmap bitmap) {
+            this.photo = photo;
+            this.bitmap = bitmap;
+        }
+    }
+
+    static LatestPreview latestPreview(Uri uri) {
+        LatestPreview latest = latestPreview;
+        return latest != null && latest.photo.uri.equals(uri) ? latest : null;
+    }
+
+    static void cacheLatestPreview(Photo photo, Bitmap source) {
+        int width = source.getWidth(), height = source.getHeight();
+        float scale = Math.min(1f, 1280f / Math.max(width, height));
+        Bitmap preview = scale < 1f
+                ? Bitmap.createScaledBitmap(source, Math.max(1, Math.round(width * scale)),
+                        Math.max(1, Math.round(height * scale)), true)
+                : source.copy(Bitmap.Config.ARGB_8888, false);
+        if (preview != null) {
+            preview.prepareToDraw();
+            latestPreview = new LatestPreview(photo, preview);
+        }
+    }
 
     static final class Photo {
         final Uri uri;
@@ -53,18 +82,19 @@ final class CaptureGalleryStore {
         return context.getSharedPreferences("capture_gallery", Context.MODE_PRIVATE);
     }
 
-    static void remember(Context context, Uri uri, File localCopy, String primary, String secondary) {
-        if (uri == null) return;
+    static Photo remember(Context context, Uri uri, File localCopy, String primary, String secondary) {
+        long date = System.currentTimeMillis();
         try {
             JSONObject record = new JSONObject();
             record.put("primary", primary);
             record.put("secondary", secondary);
-            record.put("date", System.currentTimeMillis());
+            record.put("date", date);
             if (localCopy != null) record.put("local", localCopy.getAbsolutePath());
             index(context).edit().putString(uri.toString(), record.toString()).apply();
         } catch (JSONException error) {
             Log.w("CaptureGallery", "Capture metadata could not be saved", error);
         }
+        return new Photo(uri, primary, secondary, date, localCopy);
     }
 
     static List<Photo> photos(Context context) {
@@ -171,9 +201,9 @@ final class CaptureGalleryStore {
         }
     }
 
-    static Bitmap latestThumbnail(Context context, int pixels) {
+    static LatestPreview latestThumbnail(Context context, int pixels) {
         for (Photo photo : photos(context)) {
-            try { return decodeCorner(context, photo, pixels); }
+            try { return new LatestPreview(photo, decodeCorner(context, photo, pixels)); }
             catch (IOException | RuntimeException | OutOfMemoryError ignored) {
                 // Skip photos removed or made unavailable by the system.
             }
@@ -189,5 +219,6 @@ final class CaptureGalleryStore {
             throw new IOException(context.getString(R.string.delete_app_photo_failed));
         }
         index(context).edit().remove(photo.uri.toString()).apply();
+        if (latestPreview(photo.uri) != null) latestPreview = null;
     }
 }

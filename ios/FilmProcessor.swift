@@ -5,6 +5,30 @@ import ImageIO
 import UIKit
 
 enum FilmProcessor {
+    static func warmUp(film: RawIspFilmLook, meter: String) {
+        guard let root = Bundle.main.resourceURL?.appendingPathComponent("spektra") else { return }
+        // Prime the native film graph with a small synthetic Bayer frame.
+        let side = 256
+        let raw = [UInt16](repeating: UInt16(512).littleEndian, count: side * side)
+        var rgba = [UInt8](repeating: 0, count: side * side * 4)
+        var frame = sc_raw_frame()
+        frame.width = UInt32(side)
+        frame.height = UInt32(side)
+        frame.row_stride = side * 2
+        frame.pixel_stride = 2
+        frame.size = raw.count * 2
+        frame.white = 4095
+        frame.white_balance = (1, 1, 1, 1)
+        frame.highlight_chroma_blend = 1
+        let capacity = rgba.count
+        var error = [CChar](repeating: 0, count: 512)
+        let ok = raw.withUnsafeBytes { source in
+            frame.data = source.bindMemory(to: UInt8.self).baseAddress
+            return sc_render_raw(&frame, root.path, film.id, film.paper, meter, &rgba, capacity, &error, error.count)
+        }
+        if ok != 1 { NSLog("[SpektraCam] Film warm-up skipped: %@", String(cString: error)) }
+    }
+
     static func render(_ photo: RawIspCapturedPhoto, film: RawIspFilmLook,
                        meter: String, zoom: Double) throws -> UIImage {
         guard let root = Bundle.main.resourceURL?.appendingPathComponent("spektra") else {

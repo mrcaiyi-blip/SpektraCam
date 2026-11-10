@@ -57,6 +57,7 @@ public final class MainActivity extends LocalizedActivity {
     private static final int PREVIEW_EDGE_DP = 12;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService processing = Executors.newSingleThreadExecutor();
+    private final ExecutorService galleryIndex = Executors.newSingleThreadExecutor();
     private CameraUi ui;
     private FrameLayout root, viewfinder;
     private final Rect safeInsets = new Rect();
@@ -83,6 +84,7 @@ public final class MainActivity extends LocalizedActivity {
     private LutPreviewRenderer preview;
     private ZoomPolicy zoomPolicy = new ZoomPolicy(new float[]{1});
     private long photoRevision;
+    private Uri latestCapture;
     private boolean galleryOpened;
     private boolean active, front, cameraReady, firstFrame, busy, torch;
     private int generation, countdown, compensation;
@@ -115,6 +117,17 @@ public final class MainActivity extends LocalizedActivity {
             return;
         }
         buildUi();
+        FilmLook initialLook = film;
+        String initialMeter = FilmSettingsActivity.meter(preferences);
+        processing.execute(() -> {
+            long start = android.os.SystemClock.elapsedRealtime();
+            try {
+                FilmCapture.warmUp(getApplicationContext(), initialLook, initialMeter);
+                android.util.Log.i("SpektraPerf", "Film warm-up ms=" + (android.os.SystemClock.elapsedRealtime() - start));
+            } catch (Exception | OutOfMemoryError | LinkageError error) {
+                android.util.Log.w("SpektraPerf", "Film warm-up skipped; capture will initialize on demand", error);
+            }
+        });
         restoreLastPhoto();
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.CAMERA}, CAMERA_PERMISSION);
@@ -141,6 +154,7 @@ public final class MainActivity extends LocalizedActivity {
 
     @Override protected void onDestroy() {
         processing.shutdown();
+        galleryIndex.shutdownNow();
         super.onDestroy();
     }
 
@@ -630,15 +644,28 @@ public final class MainActivity extends LocalizedActivity {
         RawCamera.Lens capturedLens = lens;
         float crop = zoomPolicy.cropRatio(zoom);
         int degrees = rotation();
+        long shutterTime = android.os.SystemClock.elapsedRealtime();
         camera.capture((raw, metadata, error) -> {
             if (error != null) { complete(null, null, error); return; }
+            long rawReady = android.os.SystemClock.elapsedRealtime();
             processing.execute(() -> {
                 Bitmap photo = null;
                 try {
+                    long renderStart = android.os.SystemClock.elapsedRealtime();
                     photo = FilmCapture.render(getApplicationContext(), capturedLens, raw, metadata, selected, meter, crop, degrees);
+                    long rendered = android.os.SystemClock.elapsedRealtime();
                     Uri uri = save(photo);
-                    CaptureGalleryStore.remember(this, uri, null, selected.title, selected.paper.isEmpty() ? "direct_scan" : selected.finishTitle);
+                    CaptureGalleryStore.Photo entry = CaptureGalleryStore.remember(this, uri, null, selected.title,
+                            selected.paper.isEmpty() ? "direct_scan" : selected.finishTitle);
                     Bitmap small = CaptureGalleryStore.cornerThumbnail(photo, 320);
+                    try {
+                        CaptureGalleryStore.cacheLatestPreview(entry, photo);
+                    } catch (RuntimeException | OutOfMemoryError previewError) {
+                        android.util.Log.w("SpektraPerf", "Could not cache the latest photo preview", previewError);
+                    }
+                    android.util.Log.i("SpektraPerf", "Shot ms: camera=" + (rawReady - shutterTime)
+                            + " queue=" + (renderStart - rawReady) + " render=" + (rendered - renderStart)
+                            + " save+previews=" + (android.os.SystemClock.elapsedRealtime() - rendered));
                     main.post(() -> complete(uri, small, getString(R.string.photo_saved)));
                 } catch (Exception | OutOfMemoryError failure) {
                     String message = getString(R.string.develop_failed);
@@ -684,6 +711,7 @@ public final class MainActivity extends LocalizedActivity {
         if (isDestroyed()) { if (small != null) small.recycle(); return; }
         if (uri != null && small != null) {
             ++photoRevision;
+            latestCapture = uri;
             thumbnail.setImageBitmap(small);
         }
         showStatus(message);
@@ -696,19 +724,23 @@ public final class MainActivity extends LocalizedActivity {
     private void openGallery(boolean latest) {
         if (locked()) return;
         galleryOpened = true;
-        startActivity(new Intent(this, CaptureGalleryActivity.class)
-                .putExtra(CaptureGalleryActivity.OPEN_LATEST, latest));
+        Intent gallery = new Intent(this, CaptureGalleryActivity.class)
+                .putExtra(CaptureGalleryActivity.OPEN_LATEST, latest);
+        if (latest && latestCapture != null) gallery.setData(latestCapture);
+        startActivity(gallery);
     }
 
     private void restoreLastPhoto() {
         final long revision = photoRevision;
-        processing.execute(() -> {
-            Bitmap thumbnailBitmap = CaptureGalleryStore.latestThumbnail(this, 320);
+        galleryIndex.execute(() -> {
+            CaptureGalleryStore.LatestPreview thumbnailEntry = CaptureGalleryStore.latestThumbnail(this, 320);
+            Bitmap thumbnailBitmap = thumbnailEntry == null ? null : thumbnailEntry.bitmap;
             main.post(() -> {
                 if (isDestroyed() || revision != photoRevision) {
                     if (thumbnailBitmap != null) thumbnailBitmap.recycle();
                     return;
                 }
+                latestCapture = thumbnailEntry == null ? null : thumbnailEntry.photo.uri;
                 if (thumbnailBitmap == null) thumbnail.setImageDrawable(new CameraUi.Glyph("photo", ui.muted));
                 else thumbnail.setImageBitmap(thumbnailBitmap);
             });

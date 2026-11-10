@@ -24,6 +24,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -75,12 +76,31 @@ public final class CaptureGalleryActivity extends LocalizedActivity {
                     android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::back);
         }
         systemBars(true);
-        TextView loading = text(getString(R.string.loading_photos), 15);
-        root.addView(loading, new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER));
+        CaptureGalleryStore.LatestPreview cached = enteredLatest
+                ? CaptureGalleryStore.latestPreview(getIntent().getData()) : null;
+        if (cached != null) {
+            photos = new ArrayList<>();
+            photos.add(cached.photo);
+            detailPreviews.put(cached.photo, cached.bitmap);
+            openPhoto(cached.photo);
+            android.util.Log.i("SpektraPerf", "Latest photo opened from memory");
+        } else {
+            TextView loading = text(getString(R.string.loading_photos), 15);
+            root.addView(loading, new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER));
+        }
         images.execute(() -> {
             List<CaptureGalleryStore.Photo> entries = CaptureGalleryStore.photos(this);
             runOnUiThread(() -> {
                 if (isFinishing() || isDestroyed()) return;
+                if (cached != null) {
+                    // Keep the identity of the already displayed photo, then load its neighbors.
+                    entries.removeIf(photo -> photo.uri.equals(cached.photo.uri));
+                    entries.add(0, cached.photo);
+                    photos = entries;
+                    refreshPreviews();
+                    preload(neighbor(1));
+                    return;
+                }
                 photos = entries;
                 if (enteredLatest && !photos.isEmpty()) openPhoto(photos.get(0));
                 else showGrid();

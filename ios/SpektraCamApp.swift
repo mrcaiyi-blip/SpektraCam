@@ -69,6 +69,14 @@ final class CameraViewModel: ObservableObject {
     @Published private(set) var hasTorch = false
     @Published private(set) var torch = false
     @Published private(set) var resultImage: UIImage?
+    private var latestPreview: GalleryLaunchPreview?
+    var galleryLaunchPreview: GalleryLaunchPreview? {
+        guard let latestPreview, FileManager.default.fileExists(atPath: latestPreview.photo.imageURL.path) else { return nil }
+        return latestPreview
+    }
+    private var currentMeter: FilmMeter {
+        FilmMeter(rawValue: UserDefaults.standard.string(forKey: "film_exposure_method") ?? "") ?? .histogramMiddleGray
+    }
 #if targetEnvironment(simulator)
     var usesSampleViewfinder: Bool {
         ProcessInfo.processInfo.arguments.contains("--sample-viewfinder")
@@ -111,7 +119,13 @@ final class CameraViewModel: ObservableObject {
         }
         AVCaptureDevice.requestAccess(for: .video) { allowed in
             Task { @MainActor in
-                if allowed { self.discoverCameras() }
+                if allowed {
+                    if let film = self.film {
+                        let meter = self.currentMeter.rawValue
+                        self.development.async { FilmProcessor.warmUp(film: film, meter: meter) }
+                    }
+                    self.discoverCameras()
+                }
                 else { self.status = "camera_permission" }
             }
         }
@@ -274,8 +288,7 @@ final class CameraViewModel: ObservableObject {
 
     private func takePhoto() {
         guard canCapture, let film else { return }
-        let meter = FilmMeter(rawValue: UserDefaults.standard.string(forKey: "film_exposure_method") ?? "")
-            ?? .histogramMiddleGray
+        let meter = currentMeter.rawValue
         let crop = max(1, zoom / (selectedLens?.zoom ?? 1))
         let orientation = UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.interfaceOrientation }.first
         let rotation = CameraPanelRotation.jpegDegrees(for: orientation ?? .portrait)
@@ -284,15 +297,17 @@ final class CameraViewModel: ObservableObject {
         capture.capture(rotation: rotation) { result in
             self.development.async {
                 do {
-                    let image = try FilmProcessor.render(result.get(), film: film, meter: meter.rawValue, zoom: crop)
+                    let image = try FilmProcessor.render(result.get(), film: film, meter: meter, zoom: crop)
                     guard let jpeg = image.jpegData(compressionQuality: 0.96) else {
                         throw CameraFailure("encode_jpeg")
                     }
                     let photo = try CaptureArchive.save(jpeg, primary: film.title, secondary: film.paper.isEmpty ? "direct_scan" : film.finishTitle)
-                    let thumbnail = CaptureArchive.thumbnail(photo, pixels: 320, square: true)
+                    let thumbnail = CaptureArchive.thumbnail(jpeg, pixels: 320, square: true)
+                    let previewImage = CaptureArchive.thumbnail(jpeg, pixels: 1280)
+                    let preview = previewImage.map { $0.preparingForDisplay() ?? $0 }
                     PHPhotoLibrary.requestAuthorization(for: .addOnly) { permission in
                         guard permission == .authorized || permission == .limited else {
-                            Task { @MainActor in self.finish(thumbnail, "saved_app_gallery") }
+                            Task { @MainActor in self.finish(thumbnail, "saved_app_gallery", photo: photo, preview: preview) }
                             return
                         }
                         var identifier: String?
@@ -302,12 +317,14 @@ final class CameraViewModel: ObservableObject {
                             identifier = request.placeholderForCreatedAsset?.localIdentifier
                         }) { saved, _ in
                             var message = saved ? "photo_saved" : "saved_app_system_failed"
+                            var indexedPhoto = photo
                             if saved, let identifier {
-                                do { try CaptureArchive.associate(photo, with: identifier) }
+                                do { indexedPhoto = try CaptureArchive.associate(photo, with: identifier) }
                                 catch { message = "link_system_copy_failed" }
                             }
                             let result = message
-                            Task { @MainActor in self.finish(thumbnail, result) }
+                            let entry = indexedPhoto
+                            Task { @MainActor in self.finish(thumbnail, result, photo: entry, preview: preview) }
                         }
                     }
                 } catch {
@@ -323,8 +340,11 @@ final class CameraViewModel: ObservableObject {
         return fallback
     }
 
-    private func finish(_ image: UIImage?, _ message: String) {
+    private func finish(_ image: UIImage?, _ message: String, photo: GalleryPhoto? = nil, preview: UIImage? = nil) {
         if let image { resultImage = image }
+        if let photo {
+            latestPreview = preview.map { GalleryLaunchPreview(photo: photo, image: $0) }
+        }
         busy = false
         status = message
         if message == "photo_saved" {

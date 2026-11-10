@@ -15,6 +15,11 @@ struct GalleryPhoto: Codable, Identifiable, Sendable {
     var imageURL: URL { folder.appendingPathComponent("photo.jpg") }
 }
 
+struct GalleryLaunchPreview {
+    let photo: GalleryPhoto
+    let image: UIImage
+}
+
 enum CaptureArchive {
     static var root: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -34,10 +39,11 @@ enum CaptureArchive {
         return photo
     }
 
-    static func associate(_ photo: GalleryPhoto, with identifier: String) throws {
+    static func associate(_ photo: GalleryPhoto, with identifier: String) throws -> GalleryPhoto {
         var updated = photo
         updated.photosIdentifier = identifier
         try JSONEncoder().encode(updated).write(to: photo.folder.appendingPathComponent("capture.json"), options: .atomic)
+        return updated
     }
 
     static func photos(legacyAlbum: String? = nil) -> [GalleryPhoto] {
@@ -86,8 +92,15 @@ enum CaptureArchive {
                                                  contentMode: square ? .aspectFill : .aspectFit, options: options) { image, _ in result = image }
             return square ? result.flatMap(centerSquare) : result
         }
-        guard let source = CGImageSourceCreateWithURL(photo.imageURL as CFURL, nil),
-              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+        return thumbnail(CGImageSourceCreateWithURL(photo.imageURL as CFURL, nil), pixels: pixels, square: square)
+    }
+
+    static func thumbnail(_ jpeg: Data, pixels: Int, square: Bool = false) -> UIImage? {
+        thumbnail(CGImageSourceCreateWithData(jpeg as CFData, nil), pixels: pixels, square: square)
+    }
+
+    private static func thumbnail(_ source: CGImageSource?, pixels: Int, square: Bool) -> UIImage? {
+        guard let source, let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
                 kCGImageSourceCreateThumbnailWithTransform: true,
                 kCGImageSourceThumbnailMaxPixelSize: pixels
@@ -245,7 +258,8 @@ struct CaptureGalleryScreen: View {
     let route: GalleryRoute
     let primaryLabel: String
     let secondaryLabel: String
-    var legacyAlbum: String? = nil
+    let legacyAlbum: String?
+    private let launchPreview: GalleryLaunchPreview?
     @Environment(\.dismiss) private var dismiss
     @State private var photos: [GalleryPhoto] = []
     @State private var selected: GalleryPhoto?
@@ -258,6 +272,16 @@ struct CaptureGalleryScreen: View {
     @State private var deleting = false
     @State private var error: String?
     @State private var errorTitle = L10n.text("gallery_error")
+
+    init(route: GalleryRoute, primaryLabel: String, secondaryLabel: String, legacyAlbum: String? = nil,
+         launchPreview: GalleryLaunchPreview? = nil) {
+        self.route = route
+        self.primaryLabel = primaryLabel
+        self.secondaryLabel = secondaryLabel
+        self.legacyAlbum = legacyAlbum
+        self.launchPreview = route == .latest ? launchPreview : nil
+        _selected = State(initialValue: self.launchPreview?.photo)
+    }
 
     var body: some View {
         ZStack {
@@ -274,8 +298,9 @@ struct CaptureGalleryScreen: View {
         .statusBarHidden(selected != nil && !showTools)
         .task {
             let entries = await Task.detached(priority: .userInitiated) { CaptureArchive.photos(legacyAlbum: legacyAlbum) }.value
+            guard !Task.isCancelled else { return }
             photos = entries
-            if route == .latest { selected = entries.first }
+            if route == .latest && selected == nil { selected = entries.first }
             ready = true
         }
         .sheet(item: $sharedPhoto, onDismiss: clearTemporaryShare) { photo in
@@ -341,6 +366,7 @@ struct CaptureGalleryScreen: View {
         ZStack {
             GalleryZoomImage(photo: photo, previous: neighbor(of: photo, offset: -1),
                              next: neighbor(of: photo, offset: 1),
+                             initialPreview: launchPreview.flatMap { $0.photo.id == photo.id ? $0.image : nil },
                              toggleTools: { showTools.toggle() }, swipeBack: {
                 if !deleting && !sharing { closeDetail() }
             }, stepPhoto: stepPhoto).ignoresSafeArea()
@@ -457,6 +483,7 @@ private struct GalleryZoomImage: UIViewRepresentable {
     let photo: GalleryPhoto
     let previous: GalleryPhoto?
     let next: GalleryPhoto?
+    let initialPreview: UIImage?
     let toggleTools: () -> Void
     let swipeBack: () -> Void
     let stepPhoto: (Int) -> Bool
@@ -467,7 +494,7 @@ private struct GalleryZoomImage: UIViewRepresentable {
         view.toggleTools = toggleTools
         view.swipeBack = swipeBack
         view.stepPhoto = stepPhoto
-        view.setPages(current: photo, previous: previous, next: next)
+        view.setPages(current: photo, previous: previous, next: next, initialPreview: initialPreview)
     }
 
     static func dismantleUIView(_ view: ZoomSurface, coordinator: ()) {
@@ -529,7 +556,7 @@ private struct GalleryZoomImage: UIViewRepresentable {
 
         required init?(coder: NSCoder) { nil }
 
-        func setPages(current: GalleryPhoto, previous: GalleryPhoto?, next: GalleryPhoto?) {
+        func setPages(current: GalleryPhoto, previous: GalleryPhoto?, next: GalleryPhoto?, initialPreview: UIImage?) {
             let changedPage = self.current?.id != current.id
             self.current = current
             self.previous = previous
@@ -537,6 +564,9 @@ private struct GalleryZoomImage: UIViewRepresentable {
             let pages = [current, previous, next].compactMap { $0 }
             let ids = Set(pages.map(\.id))
             previews = previews.filter { ids.contains($0.key) }
+            if previews[current.id] == nil, let initialPreview {
+                previews[current.id] = initialPreview
+            }
             unavailable.formIntersection(ids)
             for id in Array(loads.keys) where !ids.contains(id) {
                 loads.removeValue(forKey: id)?.cancel()

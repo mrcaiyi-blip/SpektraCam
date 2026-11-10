@@ -13,9 +13,31 @@ import android.hardware.camera2.params.RggbChannelVector;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 
 final class FilmCapture {
     private static final String RESOURCE_VERSION = "15fb1209";
+    private static boolean warmed;
+
+    static synchronized void warmUp(Context context, FilmLook look, String meter) throws IOException {
+        if (warmed) return;
+        File assets = installResources(context);
+        // A small, synthetic Bayer frame primes the same film/GPU path as the first shot.
+        int side = 256;
+        ByteBuffer raw = ByteBuffer.allocateDirect(side * side * 2).order(ByteOrder.LITTLE_ENDIAN);
+        for (int offset = 0; offset < raw.capacity(); offset += 2) raw.putShort(offset, (short) 512);
+        Bitmap bitmap = Bitmap.createBitmap(side, side, Bitmap.Config.ARGB_8888);
+        try {
+            String error = NativeFilm.render(raw, side, side, side * 2, 2, 0,
+                    new float[4], 4095, new float[]{1, 1, 1, 1},
+                    null, null, 0, 0, true, assets.getPath(), look.id, look.paper, meter, bitmap);
+            if (error != null) throw new IOException(error);
+            warmed = true;
+        } finally {
+            bitmap.recycle();
+        }
+    }
 
     static Bitmap render(Context context, RawCamera.Lens lens, RawCamera.Frame raw,
             CaptureResult result, FilmLook look, String meter,
