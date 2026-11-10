@@ -47,6 +47,7 @@ enum FilmMeter: String, CaseIterable, Identifiable {
 @MainActor
 final class CameraViewModel: ObservableObject {
     let previewRenderer = RawIspLutPreviewRenderer()
+    let galleryIndex = CaptureGalleryIndex()
     private let capture = CameraCapture()
     private let development = DispatchQueue(label: "spektracam.develop", qos: .userInitiated)
     private var prepared = false
@@ -69,11 +70,6 @@ final class CameraViewModel: ObservableObject {
     @Published private(set) var hasTorch = false
     @Published private(set) var torch = false
     @Published private(set) var resultImage: UIImage?
-    private var latestPreview: GalleryLaunchPreview?
-    var galleryLaunchPreview: GalleryLaunchPreview? {
-        guard let latestPreview, FileManager.default.fileExists(atPath: latestPreview.photo.imageURL.path) else { return nil }
-        return latestPreview
-    }
     private var currentMeter: FilmMeter {
         FilmMeter(rawValue: UserDefaults.standard.string(forKey: "film_exposure_method") ?? "") ?? .histogramMiddleGray
     }
@@ -342,9 +338,7 @@ final class CameraViewModel: ObservableObject {
 
     private func finish(_ image: UIImage?, _ message: String, photo: GalleryPhoto? = nil, preview: UIImage? = nil) {
         if let image { resultImage = image }
-        if let photo {
-            latestPreview = preview.map { GalleryLaunchPreview(photo: photo, image: $0) }
-        }
+        if let photo { galleryIndex.record(photo, detailPreview: preview) }
         busy = false
         status = message
         if message == "photo_saved" {
@@ -357,10 +351,16 @@ final class CameraViewModel: ObservableObject {
 
     func refreshGalleryThumbnail() {
         Task {
+            if !galleryIndex.loaded { await galleryIndex.refresh() }
+            guard let photo = galleryIndex.photos.first else {
+                if !busy && galleryIndex.loaded { resultImage = nil }
+                return
+            }
             let image = await Task.detached(priority: .utility) {
-                CaptureArchive.photos().first.flatMap { CaptureArchive.thumbnail($0, pixels: 320, square: true) }
+                CaptureArchive.thumbnail(photo, pixels: 320, square: true)
             }.value
-            if !busy { resultImage = image }
+            if !busy && galleryIndex.photos.first?.id == photo.id { resultImage = image }
+            await galleryIndex.warmLatestDetail()
         }
     }
 }

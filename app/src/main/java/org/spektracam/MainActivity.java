@@ -744,6 +744,7 @@ public final class MainActivity extends LocalizedActivity {
                 if (thumbnailBitmap == null) thumbnail.setImageDrawable(new CameraUi.Glyph("photo", ui.muted));
                 else thumbnail.setImageBitmap(thumbnailBitmap);
             });
+            if (thumbnailEntry != null) CaptureGalleryStore.warmDetail(this, thumbnailEntry.photo);
         });
     }
 

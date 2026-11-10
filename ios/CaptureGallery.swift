@@ -15,11 +15,6 @@ struct GalleryPhoto: Codable, Identifiable, Sendable {
     var imageURL: URL { folder.appendingPathComponent("photo.jpg") }
 }
 
-struct GalleryLaunchPreview {
-    let photo: GalleryPhoto
-    let image: UIImage
-}
-
 enum CaptureArchive {
     static var root: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -174,6 +169,72 @@ enum CaptureArchive {
     }
 }
 
+@MainActor
+final class CaptureGalleryIndex: ObservableObject {
+    @Published private(set) var photos: [GalleryPhoto] = []
+    @Published private(set) var loaded = false
+    private var scan: (id: UUID, task: Task<[GalleryPhoto], Never>)?
+    private var recentDetails: [UUID: UIImage] = [:]
+
+    func refresh() async {
+        let work: (id: UUID, task: Task<[GalleryPhoto], Never>)
+        if let scan {
+            work = scan
+        } else {
+            work = (UUID(), Task.detached(priority: .userInitiated) {
+                CaptureArchive.photos()
+            })
+            scan = work
+        }
+        let entries = await work.task.value
+        guard scan?.id == work.id else { return }
+        scan = nil
+        photos = entries
+        trimRecentDetails()
+        loaded = true
+    }
+
+    func record(_ photo: GalleryPhoto, detailPreview: UIImage? = nil) {
+        invalidateScan()
+        recentDetails[photo.id] = detailPreview
+        photos = ([photo] + photos.filter {
+            $0.id != photo.id && !(photo.photosIdentifier != nil && $0.photosIdentifier == photo.photosIdentifier)
+        }).sorted { $0.date > $1.date }
+        trimRecentDetails()
+    }
+
+    func detailPreview(for photo: GalleryPhoto) -> UIImage? {
+        recentDetails[photo.id]
+    }
+
+    func warmLatestDetail() async {
+        guard let photo = photos.first, recentDetails[photo.id] == nil else { return }
+        let image = await Task.detached(priority: .utility) {
+            let thumbnail = CaptureArchive.thumbnail(photo, pixels: 1280)
+            return thumbnail?.preparingForDisplay() ?? thumbnail
+        }.value
+        guard !Task.isCancelled, photos.prefix(2).contains(where: { $0.id == photo.id }),
+              recentDetails[photo.id] == nil else { return }
+        recentDetails[photo.id] = image
+    }
+
+    func remove(_ photo: GalleryPhoto) {
+        invalidateScan()
+        recentDetails[photo.id] = nil
+        photos.removeAll { $0.id == photo.id }
+    }
+
+    private func trimRecentDetails() {
+        let recentIDs = Set(photos.prefix(2).map(\.id))
+        recentDetails = recentDetails.filter { recentIDs.contains($0.key) }
+    }
+
+    private func invalidateScan() {
+        scan?.task.cancel()
+        scan = nil
+    }
+}
+
 enum GalleryRoute: Identifiable {
     case grid
     case latest
@@ -258,12 +319,10 @@ struct CaptureGalleryScreen: View {
     let route: GalleryRoute
     let primaryLabel: String
     let secondaryLabel: String
-    let legacyAlbum: String?
-    private let launchPreview: GalleryLaunchPreview?
+    @ObservedObject var index: CaptureGalleryIndex
     @Environment(\.dismiss) private var dismiss
-    @State private var photos: [GalleryPhoto] = []
+    private var photos: [GalleryPhoto] { index.photos }
     @State private var selected: GalleryPhoto?
-    @State private var ready = false
     @State private var showTools = true
     @State private var sharedPhoto: SharedGalleryPhoto?
     @State private var temporaryShareURL: URL?
@@ -273,14 +332,12 @@ struct CaptureGalleryScreen: View {
     @State private var error: String?
     @State private var errorTitle = L10n.text("gallery_error")
 
-    init(route: GalleryRoute, primaryLabel: String, secondaryLabel: String, legacyAlbum: String? = nil,
-         launchPreview: GalleryLaunchPreview? = nil) {
+    init(route: GalleryRoute, primaryLabel: String, secondaryLabel: String, index: CaptureGalleryIndex) {
         self.route = route
         self.primaryLabel = primaryLabel
         self.secondaryLabel = secondaryLabel
-        self.legacyAlbum = legacyAlbum
-        self.launchPreview = route == .latest ? launchPreview : nil
-        _selected = State(initialValue: self.launchPreview?.photo)
+        self.index = index
+        _selected = State(initialValue: route == .latest ? index.photos.first : nil)
     }
 
     var body: some View {
@@ -297,11 +354,11 @@ struct CaptureGalleryScreen: View {
         .preferredColorScheme(.dark)
         .statusBarHidden(selected != nil && !showTools)
         .task {
-            let entries = await Task.detached(priority: .userInitiated) { CaptureArchive.photos(legacyAlbum: legacyAlbum) }.value
-            guard !Task.isCancelled else { return }
-            photos = entries
-            if route == .latest && selected == nil { selected = entries.first }
-            ready = true
+            if route == .grid || !index.loaded { await index.refresh() }
+            if !Task.isCancelled, route == .latest,
+               selected.map({ current in !photos.contains(where: { $0.id == current.id }) }) ?? true {
+                selected = photos.first
+            }
         }
         .sheet(item: $sharedPhoto, onDismiss: clearTemporaryShare) { photo in
             GalleryShare(url: photo.url)
@@ -334,7 +391,7 @@ struct CaptureGalleryScreen: View {
                         Spacer()
                         Color.clear.frame(width: 44, height: 44)
                     }.padding(.horizontal, 12)
-                    if !ready { Spacer(); ProgressView(); Spacer() }
+                    if !index.loaded && photos.isEmpty { Spacer(); ProgressView(); Spacer() }
                     else if photos.isEmpty { Spacer(); Text(L10n.text("no_photos")).foregroundColor(.secondary); Spacer() }
                     else {
                         ScrollView {
@@ -363,10 +420,12 @@ struct CaptureGalleryScreen: View {
     }
 
     private func detail(_ photo: GalleryPhoto) -> some View {
-        ZStack {
-            GalleryZoomImage(photo: photo, previous: neighbor(of: photo, offset: -1),
-                             next: neighbor(of: photo, offset: 1),
-                             initialPreview: launchPreview.flatMap { $0.photo.id == photo.id ? $0.image : nil },
+        let previous = neighbor(of: photo, offset: -1)
+        let next = neighbor(of: photo, offset: 1)
+        return ZStack {
+            GalleryZoomImage(photo: photo, initialPreview: index.detailPreview(for: photo),
+                             previous: previous, previousPreview: previous.flatMap(index.detailPreview),
+                             next: next, nextPreview: next.flatMap(index.detailPreview),
                              toggleTools: { showTools.toggle() }, swipeBack: {
                 if !deleting && !sharing { closeDetail() }
             }, stepPhoto: stepPhoto).ignoresSafeArea()
@@ -439,7 +498,7 @@ struct CaptureGalleryScreen: View {
             defer { deleting = false }
             do {
                 try await CaptureArchive.delete(photo, includingSystemCopy: system)
-                photos.removeAll { $0.id == photo.id }
+                index.remove(photo)
                 closeDetail()
             } catch {
                 errorTitle = L10n.text("delete_failed")
@@ -481,9 +540,11 @@ private struct GalleryShare: UIViewControllerRepresentable {
 
 private struct GalleryZoomImage: UIViewRepresentable {
     let photo: GalleryPhoto
-    let previous: GalleryPhoto?
-    let next: GalleryPhoto?
     let initialPreview: UIImage?
+    let previous: GalleryPhoto?
+    let previousPreview: UIImage?
+    let next: GalleryPhoto?
+    let nextPreview: UIImage?
     let toggleTools: () -> Void
     let swipeBack: () -> Void
     let stepPhoto: (Int) -> Bool
@@ -494,7 +555,8 @@ private struct GalleryZoomImage: UIViewRepresentable {
         view.toggleTools = toggleTools
         view.swipeBack = swipeBack
         view.stepPhoto = stepPhoto
-        view.setPages(current: photo, previous: previous, next: next, initialPreview: initialPreview)
+        view.setPages(current: photo, previous: previous, next: next, initialPreview: initialPreview,
+                      previousPreview: previousPreview, nextPreview: nextPreview)
     }
 
     static func dismantleUIView(_ view: ZoomSurface, coordinator: ()) {
@@ -556,7 +618,8 @@ private struct GalleryZoomImage: UIViewRepresentable {
 
         required init?(coder: NSCoder) { nil }
 
-        func setPages(current: GalleryPhoto, previous: GalleryPhoto?, next: GalleryPhoto?, initialPreview: UIImage?) {
+        func setPages(current: GalleryPhoto, previous: GalleryPhoto?, next: GalleryPhoto?,
+                      initialPreview: UIImage? = nil, previousPreview: UIImage? = nil, nextPreview: UIImage? = nil) {
             let changedPage = self.current?.id != current.id
             self.current = current
             self.previous = previous
@@ -564,9 +627,9 @@ private struct GalleryZoomImage: UIViewRepresentable {
             let pages = [current, previous, next].compactMap { $0 }
             let ids = Set(pages.map(\.id))
             previews = previews.filter { ids.contains($0.key) }
-            if previews[current.id] == nil, let initialPreview {
-                previews[current.id] = initialPreview
-            }
+            if previews[current.id] == nil, let initialPreview { previews[current.id] = initialPreview }
+            if let previous, previews[previous.id] == nil, let previousPreview { previews[previous.id] = previousPreview }
+            if let next, previews[next.id] == nil, let nextPreview { previews[next.id] = nextPreview }
             unavailable.formIntersection(ids)
             for id in Array(loads.keys) where !ids.contains(id) {
                 loads.removeValue(forKey: id)?.cancel()
@@ -587,6 +650,7 @@ private struct GalleryZoomImage: UIViewRepresentable {
                     let image = await Self.decode(photo, pixels: 2048)
                     guard !Task.isCancelled, let self else { return }
                     self.loads[photo.id] = nil
+                    guard self.previews[photo.id] == nil else { return }
                     if let image { self.previews[photo.id] = image }
                     else { self.unavailable.insert(photo.id) }
                     self.refreshPreviews()
@@ -675,8 +739,7 @@ private struct GalleryZoomImage: UIViewRepresentable {
         }
 
         private func canShowPage(_ offset: Int) -> Bool {
-            guard let photo = offset < 0 ? previous : nextPage else { return false }
-            return previews[photo.id] != nil || unavailable.contains(photo.id)
+            offset < 0 ? previous != nil : nextPage != nil
         }
 
         override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {

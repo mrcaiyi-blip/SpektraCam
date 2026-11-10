@@ -35,9 +35,10 @@ final class GalleryZoomView extends View {
     private enum Swipe { NONE, HORIZONTAL, DOWN, IGNORED }
     private Swipe swipe = Swipe.NONE;
     private Bitmap photo, previous, next;
-    private boolean previousReady, nextReady;
+    private boolean hasPrevious, hasNext;
     private float pageOffset;
     private ValueAnimator settleAnimation;
+    private ValueAnimator zoomAnimation;
     private float fitted = 1f, zoom = 1f, x, y;
     private float startX, startY, lastX, lastY;
     private boolean moved, pinched, acceptingTouch;
@@ -59,7 +60,7 @@ final class GalleryZoomView extends View {
                 return true;
             }
             @Override public boolean onDoubleTap(MotionEvent event) {
-                scaleTo(zoom > 1.01f ? 1f : 2.5f, event.getX(), event.getY());
+                animateZoomTo(zoom > 1.01f ? 1f : 2.5f, event.getX(), event.getY());
                 return true;
             }
         });
@@ -88,11 +89,11 @@ final class GalleryZoomView extends View {
         invalidate();
     }
 
-    void setNeighbors(Bitmap previous, boolean previousReady, Bitmap next, boolean nextReady) {
+    void setNeighbors(Bitmap previous, boolean hasPrevious, Bitmap next, boolean hasNext) {
         this.previous = previous;
-        this.previousReady = previousReady;
+        this.hasPrevious = hasPrevious;
         this.next = next;
-        this.nextReady = nextReady;
+        this.hasNext = hasNext;
         invalidate();
     }
 
@@ -129,6 +130,7 @@ final class GalleryZoomView extends View {
     }
 
     private void fit() {
+        cancelZoom();
         if (photo == null || getWidth() == 0 || getHeight() == 0) return;
         fitted = Math.min((float) getWidth() / photo.getWidth(), (float) getHeight() / photo.getHeight());
         zoom = 1;
@@ -145,6 +147,39 @@ final class GalleryZoomView extends View {
         zoom = next;
         update(true);
         if (zoom > 1.05f) requestFullSize.run();
+    }
+
+    private void animateZoomTo(float target, float focusX, float focusY) {
+        if (photo == null) return;
+        cancelZoom();
+        float startZoom = zoom;
+        float offsetX = x - focusX;
+        float offsetY = y - focusY;
+        ValueAnimator animation = ValueAnimator.ofFloat(startZoom, target);
+        zoomAnimation = animation;
+        animation.setDuration(280);
+        animation.setInterpolator(new DecelerateInterpolator());
+        animation.addUpdateListener(frame -> {
+            zoom = (float) frame.getAnimatedValue();
+            float ratio = zoom / startZoom;
+            x = focusX + offsetX * ratio;
+            y = focusY + offsetY * ratio;
+            update(true);
+        });
+        animation.addListener(new AnimatorListenerAdapter() {
+            @Override public void onAnimationEnd(Animator ended) {
+                if (zoomAnimation == ended) zoomAnimation = null;
+            }
+        });
+        animation.start();
+        if (target > 1.05f) requestFullSize.run();
+    }
+
+    private void cancelZoom() {
+        if (zoomAnimation == null) return;
+        ValueAnimator animation = zoomAnimation;
+        zoomAnimation = null;
+        animation.cancel();
     }
 
     private void update(boolean constrain) {
@@ -173,6 +208,7 @@ final class GalleryZoomView extends View {
         if (action == MotionEvent.ACTION_DOWN) acceptingTouch = settleAnimation == null;
         if (!acceptingTouch) return true;
         if (action == MotionEvent.ACTION_DOWN) {
+            cancelZoom();
             startX = lastX = event.getX();
             startY = lastY = event.getY();
             swipe = Swipe.NONE;
@@ -182,6 +218,7 @@ final class GalleryZoomView extends View {
         }
         if (velocity != null) velocity.addMovement(event);
         if (action == MotionEvent.ACTION_POINTER_DOWN) {
+            cancelZoom();
             pinched = true;
             if (swipe == Swipe.HORIZONTAL || swipe == Swipe.DOWN) {
                 pageOffset = 0;
@@ -199,6 +236,7 @@ final class GalleryZoomView extends View {
         if (action == MotionEvent.ACTION_MOVE && !pinch.isInProgress() && event.getPointerCount() == 1) {
             float dx = event.getX() - startX, dy = event.getY() - startY;
             if (Math.abs(dx) > touchSlop || Math.abs(dy) > touchSlop) moved = true;
+            if (moved) cancelZoom();
             if (zoom > 1.01f && (moved || pinched)) {
                 x += event.getX() - lastX;
                 y += event.getY() - lastY;
@@ -248,7 +286,7 @@ final class GalleryZoomView extends View {
         return true;
     }
 
-    private boolean canShowPage(int offset) { return offset < 0 ? previousReady : nextReady; }
+    private boolean canShowPage(int offset) { return offset < 0 ? hasPrevious : hasNext; }
 
     private void settleOn(int page) {
         ValueAnimator animation = ValueAnimator.ofFloat(pageOffset, -page * getWidth());
@@ -285,6 +323,7 @@ final class GalleryZoomView extends View {
 
     @Override protected void onDetachedFromWindow() {
         recycleVelocity();
+        cancelZoom();
         cancelSettle();
         super.onDetachedFromWindow();
     }

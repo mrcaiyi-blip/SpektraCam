@@ -46,7 +46,7 @@ struct CameraScreen: View {
       model.setActive(scenePhase == .active)
     }) { route in
       CaptureGalleryScreen(route: route, primaryLabel: L10n.text("film_stock"), secondaryLabel: L10n.text("print_paper"),
-                           launchPreview: route == .latest ? model.galleryLaunchPreview : nil)
+                           index: model.galleryIndex)
         .environment(\.locale, locale)
     }
     .fullScreenCover(isPresented: $settings) { FilmSettingsView().environment(\.locale, locale) }

@@ -32,7 +32,11 @@ import java.util.Map;
 final class CaptureGalleryStore {
     private static final String MEDIA_FOLDER = "DCIM/SpektraCam/";
     private static final String FILE_PREFIX = "SpektraCam_";
-    private static volatile LatestPreview latestPreview;
+    private static final Comparator<Photo> NEWEST_FIRST = Comparator.comparingLong((Photo photo) -> photo.date).reversed();
+    private static final Object SCAN_LOCK = new Object();
+    private static List<Photo> photoIndex;
+    private static long indexRevision;
+    private static final List<LatestPreview> RECENT_DETAILS = new ArrayList<>(2);
 
     static final class LatestPreview {
         final Photo photo;
@@ -41,24 +45,6 @@ final class CaptureGalleryStore {
         LatestPreview(Photo photo, Bitmap bitmap) {
             this.photo = photo;
             this.bitmap = bitmap;
-        }
-    }
-
-    static LatestPreview latestPreview(Uri uri) {
-        LatestPreview latest = latestPreview;
-        return latest != null && latest.photo.uri.equals(uri) ? latest : null;
-    }
-
-    static void cacheLatestPreview(Photo photo, Bitmap source) {
-        int width = source.getWidth(), height = source.getHeight();
-        float scale = Math.min(1f, 1280f / Math.max(width, height));
-        Bitmap preview = scale < 1f
-                ? Bitmap.createScaledBitmap(source, Math.max(1, Math.round(width * scale)),
-                        Math.max(1, Math.round(height * scale)), true)
-                : source.copy(Bitmap.Config.ARGB_8888, false);
-        if (preview != null) {
-            preview.prepareToDraw();
-            latestPreview = new LatestPreview(photo, preview);
         }
     }
 
@@ -83,21 +69,101 @@ final class CaptureGalleryStore {
     }
 
     static Photo remember(Context context, Uri uri, File localCopy, String primary, String secondary) {
-        long date = System.currentTimeMillis();
+        Photo photo = new Photo(uri, primary, secondary, System.currentTimeMillis(), localCopy);
         try {
             JSONObject record = new JSONObject();
             record.put("primary", primary);
             record.put("secondary", secondary);
-            record.put("date", date);
+            record.put("date", photo.date);
             if (localCopy != null) record.put("local", localCopy.getAbsolutePath());
             index(context).edit().putString(uri.toString(), record.toString()).apply();
         } catch (JSONException error) {
             Log.w("CaptureGallery", "Capture metadata could not be saved", error);
         }
-        return new Photo(uri, primary, secondary, date, localCopy);
+        synchronized (CaptureGalleryStore.class) {
+            indexRevision++;
+            if (photoIndex != null) {
+                photoIndex.removeIf(entry -> sameCapture(entry, photo));
+                photoIndex.add(0, photo);
+                photoIndex.sort(NEWEST_FIRST);
+            }
+        }
+        return photo;
     }
 
-    static List<Photo> photos(Context context) {
+    static void cacheLatestPreview(Photo photo, Bitmap source) {
+        int width = source.getWidth(), height = source.getHeight();
+        float scale = Math.min(1f, 1280f / Math.max(width, height));
+        Bitmap preview = scale < 1f
+                ? Bitmap.createScaledBitmap(source, Math.max(1, Math.round(width * scale)),
+                        Math.max(1, Math.round(height * scale)), true)
+                : source.copy(Bitmap.Config.ARGB_8888, false);
+        if (preview != null) {
+            preview.prepareToDraw();
+            rememberDetail(new LatestPreview(photo, preview));
+        }
+    }
+
+    private static synchronized void rememberDetail(LatestPreview preview) {
+        RECENT_DETAILS.removeIf(entry -> entry.photo.uri.equals(preview.photo.uri));
+        RECENT_DETAILS.add(0, preview);
+        RECENT_DETAILS.sort(Comparator.comparingLong((LatestPreview entry) -> entry.photo.date).reversed());
+        if (RECENT_DETAILS.size() > 2) RECENT_DETAILS.remove(2);
+    }
+
+    static synchronized LatestPreview cachedDetail(Uri uri) {
+        for (LatestPreview entry : RECENT_DETAILS) {
+            if (entry.photo.uri.equals(uri)) return entry;
+        }
+        return null;
+    }
+
+    static void warmDetail(Context context, Photo photo) {
+        long revision;
+        synchronized (CaptureGalleryStore.class) {
+            if (cachedDetail(photo.uri) != null) return;
+            revision = indexRevision;
+        }
+        try {
+            Bitmap preview = decode(context, photo, 1280);
+            preview.prepareToDraw();
+            synchronized (CaptureGalleryStore.class) {
+                if (revision == indexRevision && cachedDetail(photo.uri) == null) {
+                    rememberDetail(new LatestPreview(photo, preview));
+                }
+            }
+        } catch (IOException | RuntimeException | OutOfMemoryError ignored) {
+            // The detail screen can retry an uncached preview when it opens.
+        }
+    }
+
+    static synchronized List<Photo> cachedPhotos() {
+        return photoIndex == null ? null : new ArrayList<>(photoIndex);
+    }
+
+    private static boolean sameCapture(Photo first, Photo second) {
+        return first.uri.equals(second.uri) || (first.localCopy != null && first.localCopy.equals(second.localCopy));
+    }
+
+    static List<Photo> photos(Context context, boolean refresh) {
+        synchronized (SCAN_LOCK) {
+            for (;;) {
+                long revision;
+                synchronized (CaptureGalleryStore.class) {
+                    if (!refresh && photoIndex != null) return new ArrayList<>(photoIndex);
+                    revision = indexRevision;
+                }
+                List<Photo> scanned = scanPhotos(context);
+                synchronized (CaptureGalleryStore.class) {
+                    if (revision != indexRevision) continue;
+                    photoIndex = scanned;
+                    return new ArrayList<>(photoIndex);
+                }
+            }
+        }
+    }
+
+    private static List<Photo> scanPhotos(Context context) {
         Map<Uri, Photo> found = new LinkedHashMap<>();
         for (Map.Entry<String, ?> entry : index(context).getAll().entrySet()) {
             if (!(entry.getValue() instanceof String)) continue;
@@ -132,7 +198,7 @@ final class CaptureGalleryStore {
             }
         }
         List<Photo> photos = new ArrayList<>(found.values());
-        photos.sort(Comparator.comparingLong((Photo photo) -> photo.date).reversed());
+        photos.sort(NEWEST_FIRST);
         return photos;
     }
 
@@ -202,7 +268,7 @@ final class CaptureGalleryStore {
     }
 
     static LatestPreview latestThumbnail(Context context, int pixels) {
-        for (Photo photo : photos(context)) {
+        for (Photo photo : photos(context, false)) {
             try { return new LatestPreview(photo, decodeCorner(context, photo, pixels)); }
             catch (IOException | RuntimeException | OutOfMemoryError ignored) {
                 // Skip photos removed or made unavailable by the system.
@@ -219,6 +285,10 @@ final class CaptureGalleryStore {
             throw new IOException(context.getString(R.string.delete_app_photo_failed));
         }
         index(context).edit().remove(photo.uri.toString()).apply();
-        if (latestPreview(photo.uri) != null) latestPreview = null;
+        synchronized (CaptureGalleryStore.class) {
+            indexRevision++;
+            if (photoIndex != null) photoIndex.removeIf(entry -> sameCapture(entry, photo));
+            RECENT_DETAILS.removeIf(entry -> sameCapture(entry.photo, photo));
+        }
     }
 }

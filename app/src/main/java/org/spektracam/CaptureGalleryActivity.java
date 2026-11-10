@@ -8,6 +8,7 @@ import android.graphics.Color;
 import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.LruCache;
@@ -76,36 +77,51 @@ public final class CaptureGalleryActivity extends LocalizedActivity {
                     android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::back);
         }
         systemBars(true);
+        List<CaptureGalleryStore.Photo> indexed = enteredLatest ? CaptureGalleryStore.cachedPhotos() : null;
+        if (indexed != null) {
+            showEntries(indexed);
+            return;
+        }
         CaptureGalleryStore.LatestPreview cached = enteredLatest
-                ? CaptureGalleryStore.latestPreview(getIntent().getData()) : null;
+                ? CaptureGalleryStore.cachedDetail(getIntent().getData()) : null;
         if (cached != null) {
-            photos = new ArrayList<>();
-            photos.add(cached.photo);
+            photos = new ArrayList<>(Collections.singletonList(cached.photo));
             detailPreviews.put(cached.photo, cached.bitmap);
             openPhoto(cached.photo);
-            android.util.Log.i("SpektraPerf", "Latest photo opened from memory");
         } else {
             TextView loading = text(getString(R.string.loading_photos), 15);
             root.addView(loading, new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER));
         }
         images.execute(() -> {
-            List<CaptureGalleryStore.Photo> entries = CaptureGalleryStore.photos(this);
+            List<CaptureGalleryStore.Photo> entries = CaptureGalleryStore.photos(this, !enteredLatest);
             runOnUiThread(() -> {
                 if (isFinishing() || isDestroyed()) return;
                 if (cached != null) {
-                    // Keep the identity of the already displayed photo, then load its neighbors.
                     entries.removeIf(photo -> photo.uri.equals(cached.photo.uri));
                     entries.add(0, cached.photo);
                     photos = entries;
-                    refreshPreviews();
-                    preload(neighbor(1));
+                    updateDetailPages();
                     return;
                 }
-                photos = entries;
-                if (enteredLatest && !photos.isEmpty()) openPhoto(photos.get(0));
-                else showGrid();
+                showEntries(entries);
             });
         });
+    }
+
+    private void showEntries(List<CaptureGalleryStore.Photo> entries) {
+        photos = entries;
+        if (!enteredLatest || photos.isEmpty()) {
+            showGrid();
+            return;
+        }
+        Uri target = getIntent().getData();
+        for (CaptureGalleryStore.Photo photo : photos) {
+            if (photo.uri.equals(target)) {
+                openPhoto(photo);
+                return;
+            }
+        }
+        openPhoto(photos.get(0));
     }
 
     @Override protected void onDestroy() {
@@ -237,6 +253,9 @@ public final class CaptureGalleryActivity extends LocalizedActivity {
         layoutControls();
 
         loadPhoto(photo);
+        if (enteredLatest && displayedPreview != null) {
+            android.util.Log.i("SpektraPerf", "Latest photo opened from memory");
+        }
     }
 
     private CaptureGalleryStore.Photo neighbor(int offset) {
@@ -248,7 +267,7 @@ public final class CaptureGalleryActivity extends LocalizedActivity {
     private boolean stepPhoto(int offset) {
         if (deleting || selected == null) return false;
         CaptureGalleryStore.Photo next = neighbor(offset);
-        if (next == null || !detailPreviews.containsKey(next)) return false;
+        if (next == null) return false;
         loadPhoto(next);
         return true;
     }
@@ -256,17 +275,29 @@ public final class CaptureGalleryActivity extends LocalizedActivity {
     private void loadPhoto(CaptureGalleryStore.Photo photo) {
         selected = photo;
         detailFullRequested = false;
+        useCachedDetail(photo);
         displayedPreview = detailPreviews.get(photo);
         detailImage.setPhoto(displayedPreview);
         metadata.setText(getString(R.string.photo_metadata, known(photo.primary), known(photo.secondary)));
+        updateDetailPages();
+    }
 
+    private void updateDetailPages() {
         CaptureGalleryStore.Photo previous = neighbor(-1);
         CaptureGalleryStore.Photo next = neighbor(1);
-        detailPreviews.keySet().removeIf(page -> page != photo && page != previous && page != next);
+        detailPreviews.keySet().removeIf(page -> page != selected && page != previous && page != next);
+        useCachedDetail(previous);
+        useCachedDetail(next);
         refreshPreviews();
-        preload(photo);
+        preload(selected);
         preload(previous);
         preload(next);
+    }
+
+    private void useCachedDetail(CaptureGalleryStore.Photo photo) {
+        if (photo == null || detailPreviews.containsKey(photo)) return;
+        CaptureGalleryStore.LatestPreview cached = CaptureGalleryStore.cachedDetail(photo.uri);
+        if (cached != null) detailPreviews.put(photo, cached.bitmap);
     }
 
     private void preload(CaptureGalleryStore.Photo photo) {
@@ -279,7 +310,8 @@ public final class CaptureGalleryActivity extends LocalizedActivity {
             runOnUiThread(() -> {
                 if (request == generation) detailPending.remove(photo);
                 if (isDestroyed() || isFinishing() || request != generation
-                        || (photo != selected && photo != neighbor(-1) && photo != neighbor(1))) {
+                        || (photo != selected && photo != neighbor(-1) && photo != neighbor(1))
+                        || detailPreviews.containsKey(photo)) {
                     if (bitmap != null) bitmap.recycle();
                     return;
                 }
@@ -299,8 +331,8 @@ public final class CaptureGalleryActivity extends LocalizedActivity {
         detailLoading.setText(detailPreviews.containsKey(selected) ? getString(R.string.photo_unreadable) : getString(R.string.loading_photos));
         CaptureGalleryStore.Photo previous = neighbor(-1);
         CaptureGalleryStore.Photo next = neighbor(1);
-        detailImage.setNeighbors(detailPreviews.get(previous), detailPreviews.containsKey(previous),
-                detailPreviews.get(next), detailPreviews.containsKey(next));
+        detailImage.setNeighbors(detailPreviews.get(previous), previous != null,
+                detailPreviews.get(next), next != null);
     }
 
     private void requestFullSize() {
