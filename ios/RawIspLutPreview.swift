@@ -131,7 +131,7 @@ final class RawIspLutPreviewRenderer: NSObject, AVCaptureVideoDataOutputSampleBu
             sourceTexture = device.makeTexture(descriptor: descriptor)
         }
         guard let sourceTexture else { return }
-        // The enclosing panel rotates; render the preview in its portrait coordinates.
+        // The enclosing view rotates the live preview from these portrait coordinates.
         let source = CIImage(cvPixelBuffer: buffer).oriented(.right)
         let crop = CGRect(x: source.extent.midX-source.extent.width/currentZoom/2,
                           y: source.extent.midY-source.extent.height/currentZoom/2,

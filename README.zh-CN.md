@@ -45,6 +45,26 @@ APK 适用于 Android 8.0（API 26）及以上的 `arm64-v8a` 设备。相机需
 
 产物位于 `build/ios/Release-iphoneos/SpektraCam.app`。真机安装需要签名，可设置 `IOS_DEVELOPMENT_TEAM`，或在生成的 Xcode 工程中配置签名。最低系统版本为 iOS 15，应用只提供支持 Bayer RAW 的镜头。
 
+在 Apple 芯片 Mac 上为 iPhone Duo 模拟器构建时，使用 Xcode 27.1 或更新版本，并在 Xcode 设置 → Components 中安装支持 iPhone Duo 的 iOS 模拟器运行时。
+
+```sh
+./scripts/build-ios.sh --simulator
+```
+
+在 Device Hub 启动 iPhone Duo 模拟器，安装 `build/ios-simulator/Release-iphonesimulator/SpektraCam.app`。打开胶卷和相纸选择页即可使用 App 自带的照片预览截图。在 Device Hub 中折叠设备截取外屏（竖屏 1398 × 2034），展开设备截取内屏（竖屏 2007 × 2853）。Bayer RAW 拍摄需要真机。
+
+生成 App Store 用的 JPEG 时，可用 `xcrun simctl io <UDID> enumerate` 查询当前显示屏的 ID。截图脚本会校验像素尺寸并保存模拟器输出的无 Alpha JPEG。
+
+```sh
+./scripts/capture-ios-duo.sh "$udid" "$display_id" duo.jpg
+```
+
+截取取景器时，用 `--sample-viewfinder` 启动模拟器版。取景器会显示当前胶卷自带的照片，并标注「示例预览」。
+
+```sh
+xcrun simctl launch --terminate-running-process "$udid" org.spektracam.app --sample-viewfinder
+```
+
 ## 项目结构
 
 | 路径 | 内容 |

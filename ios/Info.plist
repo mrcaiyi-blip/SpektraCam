@@ -9,16 +9,14 @@
 <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
 <key>CFBundleName</key><string>SpektraCam</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.1.0</string>
-<key>CFBundleVersion</key><string>1</string>
+<key>CFBundleShortVersionString</key><string>1.0</string>
+<key>CFBundleVersion</key><string>4</string>
+<key>ITSAppUsesNonExemptEncryption</key><false/>
 <key>NSCameraUsageDescription</key><string>Take single-exposure Bayer RAW film photos.</string>
 <key>NSPhotoLibraryUsageDescription</key><string>Access the system photo library to delete copies saved by SpektraCam.</string>
 <key>NSPhotoLibraryAddUsageDescription</key><string>Save developed film photos to the system photo library.</string>
 <key>UISupportedInterfaceOrientations</key>
 <array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationLandscapeLeft</string>
 <string>UIInterfaceOrientationLandscapeRight</string></array>
-<key>UISupportedInterfaceOrientations~ipad</key>
-<array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationPortraitUpsideDown</string>
-<string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
 <key>UILaunchScreen</key><dict/>
 </dict></plist>

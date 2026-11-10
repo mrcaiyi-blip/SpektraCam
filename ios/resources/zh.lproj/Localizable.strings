@@ -88,6 +88,7 @@
 "no_bigtiff" = "暂不支持 BigTIFF";
 "no_photos" = "还没有照片";
 "no_raw_lens" = "当前设备没有可用的 Bayer RAW 镜头";
+"sample_viewfinder" = "示例预览";
 "non_square_pixels" = "暂不支持非正方形像素";
 "not_tiff" = "不是 TIFF";
 "ok" = "好";
@@ -109,6 +110,8 @@
 "preview_failed" = "实时取景不可用";
 "print_film" = "印片";
 "print_paper" = "相纸";
+"privacy" = "隐私";
+"privacy_policy" = "隐私政策";
 "profile_license" = "胶片配置许可";
 "qq_group" = "QQ 群";
 "qq_join_help" = "请打开 QQ，搜索群号并申请加入。";

@@ -88,6 +88,7 @@
 "no_bigtiff" = "BigTIFF is not supported.";
 "no_photos" = "No photos yet";
 "no_raw_lens" = "No Bayer RAW lenses are available on this device.";
+"sample_viewfinder" = "Sample preview";
 "non_square_pixels" = "Non-square pixels are not supported.";
 "not_tiff" = "The file is not a TIFF.";
 "ok" = "OK";
@@ -109,6 +110,8 @@
 "preview_failed" = "Live preview is unavailable.";
 "print_film" = "Print film";
 "print_paper" = "Paper";
+"privacy" = "Privacy";
+"privacy_policy" = "Privacy Policy";
 "profile_license" = "Film profile license";
 "qq_group" = "QQ group";
 "qq_join_help" = "Open QQ, search for the group number, and request to join.";

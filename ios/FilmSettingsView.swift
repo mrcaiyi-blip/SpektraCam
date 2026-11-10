@@ -50,6 +50,11 @@ struct FilmSettingsView: View {
                             }
                             .pickerStyle(.menu)
                         }
+                        section(L10n.text("privacy")) {
+                            row(L10n.text("privacy_policy"), value: "↗") {
+                                openURL(URL(string: "https://github.com/mrcaiyi-blip/SpektraCam/blob/main/docs/privacy-policy.md")!)
+                            }
+                        }
                         if !supportLinks.isEmpty {
                             section(L10n.text("support_community")) {
                                 ForEach(supportLinks) { link in

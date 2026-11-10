@@ -45,6 +45,26 @@ On macOS, install Xcode, CMake, Python 3, and `glslc`. The build script looks fo
 
 The app bundle is written to `build/ios/Release-iphoneos/SpektraCam.app`. For a device build, set `IOS_DEVELOPMENT_TEAM` or configure signing in the generated Xcode project. The minimum version is iOS 15. The app only offers lenses that report Bayer RAW support.
 
+To build for the iPhone Duo simulator on Apple silicon, use Xcode 27.1 or later and install an iOS simulator runtime that includes iPhone Duo support from Xcode Settings → Components.
+
+```sh
+./scripts/build-ios.sh --simulator
+```
+
+In Device Hub, boot an iPhone Duo simulator and install `build/ios-simulator/Release-iphonesimulator/SpektraCam.app`. Open the film and paper selector to capture its bundled photo preview. Use the Device Hub screenshot control with the device folded for the outer display (1398 × 2034 in portrait) and unfolded for the inner display (2007 × 2853 in portrait). Bayer RAW capture requires a physical device.
+
+For an App Store JPEG, look up the active screen's ID with `xcrun simctl io <UDID> enumerate`. The capture script checks the pixel dimensions and saves the simulator's JPEG without an alpha channel.
+
+```sh
+./scripts/capture-ios-duo.sh "$udid" "$display_id" duo.jpg
+```
+
+To capture the viewfinder, launch the simulator build with `--sample-viewfinder`. The viewfinder labels the selected film's bundled image as a sample preview.
+
+```sh
+xcrun simctl launch --terminate-running-process "$udid" org.spektracam.app --sample-viewfinder
+```
+
 ## Development
 
 | Path | Contents |

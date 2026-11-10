@@ -69,6 +69,11 @@ final class CameraViewModel: ObservableObject {
     @Published private(set) var hasTorch = false
     @Published private(set) var torch = false
     @Published private(set) var resultImage: UIImage?
+#if targetEnvironment(simulator)
+    var usesSampleViewfinder: Bool {
+        ProcessInfo.processInfo.arguments.contains("--sample-viewfinder")
+    }
+#endif
     var session: AVCaptureSession { capture.session }
     private var facingLenses: [CameraLens] {
         lenses.filter { $0.device.position == position }.sorted { $0.zoom < $1.zoom }
@@ -94,6 +99,12 @@ final class CameraViewModel: ObservableObject {
             }
             select(selected.selectingPaper(UserDefaults.standard.string(forKey: "selected_print")))
         } catch { status = Self.errorKey(error, fallback: "film_catalog_read_error"); return }
+#if targetEnvironment(simulator)
+        if usesSampleViewfinder {
+            status = "sample_viewfinder"
+            return
+        }
+#endif
         previewRenderer.onError = { [weak self] message in
             NSLog("[SpektraCam] Live preview failed: %@", message)
             Task { @MainActor in self?.status = "preview_failed" }
