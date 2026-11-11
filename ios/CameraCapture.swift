@@ -9,6 +9,7 @@ struct RawIspCapturedPhoto: @unchecked Sendable {
     let dngData: Data?
     let rawPixelFormat: OSType
     let displayRotationDegrees: Int32
+    let dngEncodingTime: TimeInterval
 }
 
 struct CameraFailure: LocalizedError {
@@ -148,6 +149,9 @@ final class CameraCapture: NSObject, AVCapturePhotoCaptureDelegate {
                 renderer.resetFocusGeometry()
                 self.format = raw
                 self.device = device
+                // Allocate RAW capture resources while configuring the lens, before the first shutter press.
+                self.output.setPreparedPhotoSettingsArray([AVCapturePhotoSettings(rawPixelFormatType: raw)],
+                                                          completionHandler: nil)
                 accepted = true
                 return device
             }
@@ -158,7 +162,7 @@ final class CameraCapture: NSObject, AVCapturePhotoCaptureDelegate {
         }
     }
 
-    func setRunning(_ running: Bool) {
+    func setRunning(_ running: Bool, completion: @escaping (Bool) -> Void) {
         queue.async {
             if running && self.format != nil && !self.session.isRunning { self.session.startRunning() }
             if !running && self.session.isRunning {
@@ -168,6 +172,7 @@ final class CameraCapture: NSObject, AVCapturePhotoCaptureDelegate {
                 }
                 self.session.stopRunning()
             }
+            completion(self.session.isRunning)
         }
     }
 
@@ -203,9 +208,12 @@ final class CameraCapture: NSObject, AVCapturePhotoCaptureDelegate {
             guard photo.isRawPhoto, let pixels = photo.pixelBuffer else {
                 self.processed = .failure(CameraFailure("raw_no_buffer")); return
             }
+            let start = ProcessInfo.processInfo.systemUptime
+            let dng = photo.fileDataRepresentation()
             self.processed = .success(RawIspCapturedPhoto(
-                pixelBuffer: pixels, metadata: photo.metadata, dngData: photo.fileDataRepresentation(),
-                rawPixelFormat: CVPixelBufferGetPixelFormatType(pixels), displayRotationDegrees: request.rotation))
+                pixelBuffer: pixels, metadata: photo.metadata, dngData: dng,
+                rawPixelFormat: CVPixelBufferGetPixelFormatType(pixels), displayRotationDegrees: request.rotation,
+                dngEncodingTime: ProcessInfo.processInfo.systemUptime - start))
         }
     }
 

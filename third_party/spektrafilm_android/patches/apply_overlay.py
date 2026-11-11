@@ -42,6 +42,13 @@ def write(name,text):
     if not p.exists() or p.read_text()!=text:p.write_text(text)
 
 s=source('gpu/vulkan_compute.cpp')
+s=replace(s,'#include "gpu/vulkan_compute.h"', '''#include "gpu/vulkan_compute.h"
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#if TARGET_OS_IOS
+#include <charconv>
+#endif
+#endif''')
 s=replace(s,'        ici.pApplicationInfo = &app;', '''        ici.pApplicationInfo = &app;
 #ifdef __APPLE__
         // A Vulkan loader exposes portability_enumeration, while statically
@@ -114,6 +121,33 @@ ScanTailDiagnostics scan_tail_diagnostics(){return lutcam_tail_diagnostics;}
 
 '''+anchor)
 s=replace(s,'bool available() { return false; }','bool available() { return false; }\nbool scan_tail(const float*,const float*,int,int,const double*,const double*,double,double,float*){return false;}\nbool grain_chain(const float*,int,int,const float*,const float*,int,bool,double,const GrainParams&,float*){return false;}\nbool halation_scatter_f32(const HalationScatterRequest&,float*,HalationScatterDiagnostics*){return false;}\nbool expose_halation_chain(const double*,const float*,double,int,int,const double*,int,double,const HalationScatterRequest&,float*){return false;}\nbool mapped_dir_diffusion(const HalationScatterRequest&,MappedPrepare,MappedFinish,void*){return false;}')
+s=replace(s,'bool available() { return false; }','bool available() { return false; }\nbool prefer_spatial_gpu() { return false; }')
+anchor='''bool available() {
+    std::lock_guard<std::mutex> lk(gpu_mutex());
+    return ctx().ok;
+}'''
+s=replace(s,anchor,anchor+'''
+
+bool prefer_spatial_gpu() {
+#if defined(__APPLE__) && TARGET_OS_IOS
+    std::lock_guard<std::mutex> lock(gpu_mutex());
+    const Ctx& c = ctx();
+    // Use the CPU for halation and DIR diffusion until the A18 generation.
+    // MoltenVK reports names such as "Apple A18 Pro GPU".
+    constexpr char prefix[] = "Apple A";
+    constexpr size_t prefixLength = sizeof(prefix) - 1;
+    const char* name = c.properties.deviceName;
+    if (!c.ok || std::strncmp(name, prefix, prefixLength) != 0) return false;
+
+    unsigned generation = 0;
+    const char* end = name + std::strlen(name);
+    const auto parsed = std::from_chars(name + prefixLength, end, generation);
+    return parsed.ec == std::errc{} && generation >= 18 &&
+           (parsed.ptr == end || *parsed.ptr == ' ');
+#else
+    return true;
+#endif
+}''')
 # A resident diffusion result was written by transfer, not by compute.
 s=replace(s,'pre.srcAccessMask = toDevice ? VK_ACCESS_HOST_WRITE_BIT : VK_ACCESS_SHADER_WRITE_BIT;',
     'pre.srcAccessMask = toDevice ? VK_ACCESS_HOST_WRITE_BIT : VK_ACCESS_MEMORY_WRITE_BIT;')
@@ -164,6 +198,28 @@ s=replace(s,'    write_halation_sets(c, k);',"""    write_halation_sets(c, k);
     lutcam_seventh_diagnostics.self_error=lutcam_padded_error;""")
 s=replace(s,'vkCmdDispatch(k.cmd, (width + kHalLineThreads - 1u) / kHalLineThreads, 1, 1);','vkCmdDispatch(k.cmd, (width * (use_parallel ? 3u : 1u) + kHalLineThreads - 1u) / kHalLineThreads, 1, 1);')
 s=replace(s,'vkCmdBindPipeline(k.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, k.pipe);','const bool cached=use_padded && op==kHalOpTranspose;\n        if(cached){lutcam_seventh_diagnostics.attempted=true;lutcam_seventh_diagnostics.engaged=true;lutcam_seventh_diagnostics.reason="none";}\n        vkCmdBindPipeline(k.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cached?k.paddedPipe:activePipeline);')
+anchor='''    auto dispatch = [&](uint32_t set, uint32_t op, uint32_t sigmaMode, uint32_t component,
+                        uint32_t width, uint32_t height) {'''
+s=replace(s,anchor,'''    bool batchOk = true;
+    // MoltenVK maps a Vulkan submission to one Metal command buffer. The
+    // whole spatial graph can exceed the GPU watchdog on older iPhones.
+    // Keep the same full-image kernels and barriers, but yield between passes.
+#if defined(__APPLE__) && TARGET_OS_IOS
+    constexpr uint64_t boundedFramePixels = 4ull * 1024 * 1024;
+    constexpr uint32_t maxDispatchesPerBatch = 2;
+#endif
+'''+anchor+'''
+        if (!batchOk) return;
+#if defined(__APPLE__) && TARGET_OS_IOS
+        if (uint64_t(W) * H > boundedFramePixels && dispatches != 0 &&
+            dispatches % maxDispatchesPerBatch == 0) {
+            batchOk = submit_wait() && begin();
+            if (!batchOk) return;
+        }
+#endif''')
+anchor='''    const VkBuffer result = (scatterActive && bounceActive) ? k.work[kHalSrc].buf : k.work[kHalX].buf;
+    if (!submit_wait()) { d.reason = "dispatch-failed"; return false; }'''
+s=replace(s,anchor,anchor.replace('if (!submit_wait())','if (!batchOk || !submit_wait())'))
 anchor='    d.resident = resident;\n    return true;\n}\n\n}  // namespace'
 s=replace(s,anchor,'    d.resident = resident;\n    return true;\n}\n\n#include "spatial_parallel_check.inc"\n#include "transpose_padded_check.inc"\n\n}  // namespace')
 # Last public-namespace close is followed by the feature guard.
@@ -171,6 +227,17 @@ pos=s.rfind('}  // namespace spk::gpu')
 if pos<0:raise RuntimeError('Missing GPU namespace close')
 s=s[:pos]+'#include "scan_tail_impl.inc"\n#include "grain_chain_impl.inc"\n#include "third_pass_impl.inc"\n#include "fifth_pass_impl.inc"\n#include "sixth_pass_impl.inc"\n\n'+s[pos:]
 write('vulkan_compute.cpp',s)
+s=source('spektra.cpp')
+s=replace(s,'#include "gpu/vulkan_compute.h"','#include "gpu/vulkan_compute.h"\n#include "third_pass.h"')
+for before,after in (
+    ('fparams.allow_gpu_halation = fast_gpu_route;',
+     'const bool spatial_gpu_route = fast_gpu_route && spk::gpu::prefer_spatial_gpu();\n    fparams.allow_gpu_halation = spatial_gpu_route;'),
+    ('fparams.dir_couplers.allow_gpu_diffusion = fast_gpu_route;',
+     'fparams.dir_couplers.allow_gpu_diffusion = spatial_gpu_route;'),
+):
+    if s.count(before)!=2:raise RuntimeError('Expected both scan and print routing gates: '+before)
+    s=s.replace(before,after)
+write('spektra.cpp',s)
 s=source('runtime/stages/scanning.cpp')
 s=replace(s,'#include "gpu/vulkan_compute.h"','#include "gpu/vulkan_compute.h"\n#include "scan_tail.h"')
 anchor='                lin_buf.reset(new double[static_cast<size_t>(npix) * 3]);'

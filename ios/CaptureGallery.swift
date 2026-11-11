@@ -41,6 +41,24 @@ enum CaptureArchive {
         return updated
     }
 
+    static func copyToSystemPhotos(_ photo: GalleryPhoto) async -> (GalleryPhoto, String) {
+        let permission = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
+        guard permission == .authorized || permission == .limited else { return (photo, "saved_app_gallery") }
+        var identifier: String?
+        do {
+            try await PHPhotoLibrary.shared().performChanges {
+                let request = PHAssetCreationRequest.forAsset()
+                request.addResource(with: .photo, fileURL: photo.imageURL, options: nil)
+                identifier = request.placeholderForCreatedAsset?.localIdentifier
+            }
+        } catch {
+            return (photo, "saved_app_system_failed")
+        }
+        guard let identifier else { return (photo, "link_system_copy_failed") }
+        do { return (try associate(photo, with: identifier), "photo_saved") }
+        catch { return (photo, "link_system_copy_failed") }
+    }
+
     static func photos(legacyAlbum: String? = nil) -> [GalleryPhoto] {
         let folders = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil,
                                                                      options: .skipsHiddenFiles)) ?? []
@@ -90,10 +108,6 @@ enum CaptureArchive {
         return thumbnail(CGImageSourceCreateWithURL(photo.imageURL as CFURL, nil), pixels: pixels, square: square)
     }
 
-    static func thumbnail(_ jpeg: Data, pixels: Int, square: Bool = false) -> UIImage? {
-        thumbnail(CGImageSourceCreateWithData(jpeg as CFData, nil), pixels: pixels, square: square)
-    }
-
     private static func thumbnail(_ source: CGImageSource?, pixels: Int, square: Bool) -> UIImage? {
         guard let source, let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -102,6 +116,22 @@ enum CaptureArchive {
               ] as CFDictionary) else { return nil }
         let thumbnail = UIImage(cgImage: image)
         return square ? centerSquare(thumbnail) : thumbnail
+    }
+
+    /// Generate the capture previews from the rendered pixels while they're still in memory.
+    static func downsample(_ image: UIImage, pixels: CGFloat) -> UIImage {
+        let size = image.size
+        let scale = pixels / max(size.width, size.height)
+        guard scale < 1 else { return image }
+        let target = CGSize(width: max(1, (size.width * scale).rounded()),
+                            height: max(1, (size.height * scale).rounded()))
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        return UIGraphicsImageRenderer(size: target, format: format).image { context in
+            context.cgContext.interpolationQuality = .high
+            image.draw(in: CGRect(origin: .zero, size: target))
+        }
     }
 
     static func centerSquare(_ image: UIImage) -> UIImage? {
@@ -173,6 +203,7 @@ enum CaptureArchive {
 final class CaptureGalleryIndex: ObservableObject {
     @Published private(set) var photos: [GalleryPhoto] = []
     @Published private(set) var loaded = false
+    @Published private var copyingToSystem = Set<UUID>()
     private var scan: (id: UUID, task: Task<[GalleryPhoto], Never>)?
     private var recentDetails: [UUID: UIImage] = [:]
 
@@ -189,18 +220,34 @@ final class CaptureGalleryIndex: ObservableObject {
         let entries = await work.task.value
         guard scan?.id == work.id else { return }
         scan = nil
-        photos = entries
+        // A scan started during a Photos write may have read the old metadata.
+        let linked = Dictionary(uniqueKeysWithValues: photos.compactMap { photo in
+            photo.photosIdentifier.map { (photo.id, $0) }
+        })
+        photos = entries.map { photo in
+            var current = photo
+            current.photosIdentifier = photo.photosIdentifier ?? linked[photo.id]
+            return current
+        }
         trimRecentDetails()
         loaded = true
     }
 
-    func record(_ photo: GalleryPhoto, detailPreview: UIImage? = nil) {
+    func recordCapture(_ photo: GalleryPhoto, detailPreview: UIImage) {
         invalidateScan()
+        copyingToSystem.insert(photo.id)
         recentDetails[photo.id] = detailPreview
-        photos = ([photo] + photos.filter {
-            $0.id != photo.id && !(photo.photosIdentifier != nil && $0.photosIdentifier == photo.photosIdentifier)
-        }).sorted { $0.date > $1.date }
+        photos = ([photo] + photos.filter { $0.id != photo.id }).sorted { $0.date > $1.date }
         trimRecentDetails()
+    }
+
+    func isCopyingToSystem(_ photo: GalleryPhoto) -> Bool { copyingToSystem.contains(photo.id) }
+
+    func completeSystemCopy(_ photo: GalleryPhoto) {
+        if photo.photosIdentifier != nil, let index = photos.firstIndex(where: { $0.id == photo.id }) {
+            photos[index] = photo
+        }
+        copyingToSystem.remove(photo.id)
     }
 
     func detailPreview(for photo: GalleryPhoto) -> UIImage? {
@@ -322,7 +369,8 @@ struct CaptureGalleryScreen: View {
     @ObservedObject var index: CaptureGalleryIndex
     @Environment(\.dismiss) private var dismiss
     private var photos: [GalleryPhoto] { index.photos }
-    @State private var selected: GalleryPhoto?
+    @State private var selectedID: UUID?
+    private var selected: GalleryPhoto? { photos.first { $0.id == selectedID } }
     @State private var showTools = true
     @State private var sharedPhoto: SharedGalleryPhoto?
     @State private var temporaryShareURL: URL?
@@ -337,7 +385,7 @@ struct CaptureGalleryScreen: View {
         self.primaryLabel = primaryLabel
         self.secondaryLabel = secondaryLabel
         self.index = index
-        _selected = State(initialValue: route == .latest ? index.photos.first : nil)
+        _selectedID = State(initialValue: route == .latest ? index.photos.first?.id : nil)
     }
 
     var body: some View {
@@ -355,9 +403,8 @@ struct CaptureGalleryScreen: View {
         .statusBarHidden(selected != nil && !showTools)
         .task {
             if route == .grid || !index.loaded { await index.refresh() }
-            if !Task.isCancelled, route == .latest,
-               selected.map({ current in !photos.contains(where: { $0.id == current.id }) }) ?? true {
-                selected = photos.first
+            if !Task.isCancelled, route == .latest, selected == nil {
+                selectedID = photos.first?.id
             }
         }
         .sheet(item: $sharedPhoto, onDismiss: clearTemporaryShare) { photo in
@@ -399,7 +446,7 @@ struct CaptureGalleryScreen: View {
                                 ForEach(photos) { photo in
                                     Button {
                                         showTools = true
-                                        selected = photo
+                                        selectedID = photo.id
                                     } label: {
                                         GalleryTile(photo: photo, side: max(1, (geometry.size.width - 6) / 3))
                                     }.buttonStyle(.plain)
@@ -436,6 +483,7 @@ struct CaptureGalleryScreen: View {
                         Spacer()
                         tool("square.and.arrow.up", L10n.text("share_photo")) { share(photo) }
                         tool("trash", L10n.text("delete_photo")) { confirmDelete = true }
+                            .disabled(index.isCopyingToSystem(photo))
                     }.padding(.horizontal, 12).background(.black.opacity(0.7))
                     Spacer()
                     VStack(alignment: .leading, spacing: 5) {
@@ -456,7 +504,7 @@ struct CaptureGalleryScreen: View {
     }
 
     private func closeDetail() {
-        if route == .latest { dismiss() } else { selected = nil }
+        if route == .latest { dismiss() } else { selectedID = nil }
     }
 
     private func neighbor(of photo: GalleryPhoto, offset: Int) -> GalleryPhoto? {
@@ -468,7 +516,7 @@ struct CaptureGalleryScreen: View {
     private func stepPhoto(_ offset: Int) -> Bool {
         guard !deleting, !sharing, let selected,
               let photo = neighbor(of: selected, offset: offset) else { return false }
-        self.selected = photo
+        selectedID = photo.id
         return true
     }
 

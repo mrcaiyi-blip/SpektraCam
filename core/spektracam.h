@@ -28,6 +28,9 @@ typedef struct {
     uint8_t highlight_chroma_blend;
 } sc_raw_frame;
 
+// Create the RAW Vulkan pipelines without submitting any GPU work.
+int sc_prepare_raw(void);
+
 // Writes tightly packed opaque sRGB RGBA8. Pointers are borrowed for the call.
 // A null or empty metering method selects histogram_middle_gray.
 int sc_render_raw(const sc_raw_frame* frame, const char* resource_root,

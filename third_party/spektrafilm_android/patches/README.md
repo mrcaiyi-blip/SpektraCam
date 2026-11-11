@@ -47,6 +47,14 @@ python3 tools/film_lut/build_scan_tail_shader.py /path/to/ndk/shader-tools/HOST/
 embedded shader are included in the source distribution. `overlay_sha256.json`
 records local sources; original source hashes remain in `../UPSTREAM_SHA256.json`.
 
+## iOS full resolution capture
+
+Large spatial passes on MoltenVK yield between groups of dispatches to keep
+any one Metal command buffer from timing out. On iOS, the A18 generation and
+newer A-series chips use the GPU for halation and DIR diffusion. Earlier and
+unrecognized chips run those two stages on the CPU and use GPU acceleration
+for the other supported stages. Both routes keep the complete film model.
+
 ## Resident grain and scan transfers (2026-10-22 second pass)
 
 The filming overlay offers default sublayer grain to a resident chain before

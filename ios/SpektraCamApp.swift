@@ -1,5 +1,5 @@
 import AVFoundation
-import Photos
+import OSLog
 import SwiftUI
 import UIKit
 
@@ -46,13 +46,17 @@ enum FilmMeter: String, CaseIterable, Identifiable {
 
 @MainActor
 final class CameraViewModel: ObservableObject {
+    private static let captureLog = Logger(subsystem: "org.spektracam.app", category: "CaptureTiming")
     let previewRenderer = RawIspLutPreviewRenderer()
     let galleryIndex = CaptureGalleryIndex()
     private let capture = CameraCapture()
     private let development = DispatchQueue(label: "spektracam.develop", qos: .userInitiated)
     private var prepared = false
-    private var active = true
-    private var ready = false
+    private var preparedRawPipelines = false
+    @Published private var active = true
+    @Published private var ready = false
+    @Published private var sessionRunning = false
+    private var runningRequest = 0
     private var position = AVCaptureDevice.Position.back
     private var selectedLens: CameraLens?
     private var lenses: [CameraLens] = []
@@ -84,7 +88,7 @@ final class CameraViewModel: ObservableObject {
     }
     var canSwitchFacing: Bool { ready && !busy && lenses.contains { $0.device.position != position } }
     var exposureSupported: Bool { minEv < maxEv }
-    var canCapture: Bool { active && ready && film != nil && !busy }
+    var canCapture: Bool { active && ready && sessionRunning && film != nil && !busy }
     var zoomStops: [Double] {
         var stops = Set(facingLenses.map(\.zoom))
         if facingLenses.contains(where: { $0.zoom == 1 }) { stops.insert(2) }
@@ -115,13 +119,7 @@ final class CameraViewModel: ObservableObject {
         }
         AVCaptureDevice.requestAccess(for: .video) { allowed in
             Task { @MainActor in
-                if allowed {
-                    if let film = self.film {
-                        let meter = self.currentMeter.rawValue
-                        self.development.async { FilmProcessor.warmUp(film: film, meter: meter) }
-                    }
-                    self.discoverCameras()
-                }
+                if allowed { self.discoverCameras() }
                 else { self.status = "camera_permission" }
             }
         }
@@ -161,7 +159,7 @@ final class CameraViewModel: ObservableObject {
                     self.hasTorch = device.hasTorch
                     self.torch = false
                     self.applyZoom(zoom, on: next)
-                    self.capture.setRunning(self.active)
+                    self.updateSessionRunning()
                     self.status = "single_raw"
                 case .failure(let error):
                     self.status = Self.errorKey(error, fallback: "raw_camera_failed")
@@ -181,7 +179,25 @@ final class CameraViewModel: ObservableObject {
     func setActive(_ value: Bool) {
         active = value
         if !value { cancelCountdown(); torch = false }
-        capture.setRunning(value)
+        updateSessionRunning()
+    }
+
+    private func updateSessionRunning() {
+        runningRequest += 1
+        let request = runningRequest
+        if !active { sessionRunning = false }
+        capture.setRunning(active) { running in
+            Task { @MainActor in
+                guard self.runningRequest == request else { return }
+                // Compile the Bayer shaders before the first shot. A speculative
+                // film render would compete with the live preview for the GPU.
+                if running && self.active && !self.preparedRawPipelines {
+                    self.preparedRawPipelines = true
+                    self.development.async { _ = sc_prepare_raw() }
+                }
+                self.sessionRunning = running
+            }
+        }
     }
 
     func select(_ value: RawIspFilmLook) {
@@ -290,43 +306,45 @@ final class CameraViewModel: ObservableObject {
         let rotation = CameraPanelRotation.jpegDegrees(for: orientation ?? .portrait)
         busy = true
         status = "developing_raw"
+        let shutter = ProcessInfo.processInfo.systemUptime
         capture.capture(rotation: rotation) { result in
+            let captured = ProcessInfo.processInfo.systemUptime
             self.development.async {
                 do {
-                    let image = try FilmProcessor.render(result.get(), film: film, meter: meter, zoom: crop)
+                    let raw = try result.get()
+                    let (image, nativeTime) = try FilmProcessor.render(raw, film: film, meter: meter, zoom: crop)
+                    let rendered = ProcessInfo.processInfo.systemUptime
                     guard let jpeg = image.jpegData(compressionQuality: 0.96) else {
                         throw CameraFailure("encode_jpeg")
                     }
                     let photo = try CaptureArchive.save(jpeg, primary: film.title, secondary: film.paper.isEmpty ? "direct_scan" : film.finishTitle)
-                    let thumbnail = CaptureArchive.thumbnail(jpeg, pixels: 320, square: true)
-                    let previewImage = CaptureArchive.thumbnail(jpeg, pixels: 1280)
-                    let preview = previewImage.map { $0.preparingForDisplay() ?? $0 }
-                    PHPhotoLibrary.requestAuthorization(for: .addOnly) { permission in
-                        guard permission == .authorized || permission == .limited else {
-                            Task { @MainActor in self.finish(thumbnail, "saved_app_gallery", photo: photo, preview: preview) }
-                            return
-                        }
-                        var identifier: String?
-                        PHPhotoLibrary.shared().performChanges({
-                            let request = PHAssetCreationRequest.forAsset()
-                            request.addResource(with: .photo, data: jpeg, options: nil)
-                            identifier = request.placeholderForCreatedAsset?.localIdentifier
-                        }) { saved, _ in
-                            var message = saved ? "photo_saved" : "saved_app_system_failed"
-                            var indexedPhoto = photo
-                            if saved, let identifier {
-                                do { indexedPhoto = try CaptureArchive.associate(photo, with: identifier) }
-                                catch { message = "link_system_copy_failed" }
-                            }
-                            let result = message
-                            let entry = indexedPhoto
-                            Task { @MainActor in self.finish(thumbnail, result, photo: entry, preview: preview) }
-                        }
+                    let preview = CaptureArchive.downsample(image, pixels: 1280)
+                    let thumbnail = CaptureArchive.centerSquare(preview).map { CaptureArchive.downsample($0, pixels: 320) }
+                    let dngTime = raw.dngEncodingTime
+                    Task { @MainActor in
+                        self.galleryIndex.recordCapture(photo, detailPreview: preview)
+                        if let thumbnail { self.resultImage = thumbnail }
+                        self.busy = false
+                        self.status = "single_raw"
+                        let visible = ProcessInfo.processInfo.systemUptime
+                        func ms(_ time: TimeInterval) -> Int { Int((time * 1_000).rounded()) }
+                        Self.captureLog.notice("Capture ms: camera=\(ms(captured - shutter)), DNG=\(ms(dngTime)) (included in camera), development=\(ms(rendered - captured)), native=\(ms(nativeTime)) (included in development), JPEG/archive/previews=\(ms(visible - rendered)), ready=\(ms(visible - shutter))")
+                        self.exportToSystemPhotos(photo)
                     }
                 } catch {
-                    Task { @MainActor in self.finish(nil, Self.errorKey(error, fallback: "develop_failed")) }
+                    Task { @MainActor in
+                        self.busy = false
+                        self.status = Self.errorKey(error, fallback: "develop_failed")
+                    }
                 }
             }
+        }
+    }
+
+    private func exportToSystemPhotos(_ photo: GalleryPhoto) {
+        Task.detached(priority: .utility) { [weak self] in
+            let (entry, message) = await CaptureArchive.copyToSystemPhotos(photo)
+            await self?.completeSystemCopy(entry, message: message)
         }
     }
 
@@ -336,15 +354,14 @@ final class CameraViewModel: ObservableObject {
         return fallback
     }
 
-    private func finish(_ image: UIImage?, _ message: String, photo: GalleryPhoto? = nil, preview: UIImage? = nil) {
-        if let image { resultImage = image }
-        if let photo { galleryIndex.record(photo, detailPreview: preview) }
-        busy = false
+    private func completeSystemCopy(_ photo: GalleryPhoto, message: String) {
+        galleryIndex.completeSystemCopy(photo)
+        guard !busy, galleryIndex.photos.first?.id == photo.id, status == "single_raw" else { return }
         status = message
         if message == "photo_saved" {
             Task {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
-                if status == message { status = "single_raw" }
+                if status == message, galleryIndex.photos.first?.id == photo.id { status = "single_raw" }
             }
         }
     }

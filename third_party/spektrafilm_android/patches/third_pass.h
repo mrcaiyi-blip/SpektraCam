@@ -10,6 +10,7 @@ struct ThirdPassDiagnostics {
 };
 void set_third_pass_enabled(bool enabled);
 bool third_pass_enabled();
+bool prefer_spatial_gpu();
 void reset_third_pass_diagnostics();
 ThirdPassDiagnostics third_pass_diagnostics();
 void note_print_tail();

@@ -380,12 +380,20 @@ std::vector<float> Session::develop(const RawFrame& frame) {
     return rgb;
 }
 
+Session& rawSession() {
+    static Session session;
+    return session;
+}
+
 } // namespace
+
+void prepareRaw() {
+    (void)rawSession();
+}
 
 std::vector<float> developRaw(const RawFrame& frame) {
     validateRaw(frame);
-    static Session session;
-    return session.develop(frame);
+    return rawSession().develop(frame);
 }
 
 } // namespace spektracam

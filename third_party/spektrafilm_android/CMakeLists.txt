@@ -23,7 +23,7 @@ if(NOT overlay_status EQUAL 0)
     message(FATAL_ERROR "Checked Spektrafilm overlay failed")
 endif()
 add_library(spektrafilm_engine STATIC
-    engine/spektra.cpp
+    "${LUTCAM_OVERLAY}/spektra.cpp"
     engine/kernels/interp.cpp
     engine/kernels/gaussian.cpp
     engine/kernels/gaussian_hwy.cpp

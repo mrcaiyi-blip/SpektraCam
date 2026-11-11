@@ -29,7 +29,12 @@ struct RawIspDngStage3Vignette {
     }
 
     static func read(_ data: Data, activeWidth: Int, activeHeight: Int) throws -> Self? {
-        let bytes = [UInt8](data)
+        try data.withUnsafeBytes { bytes in
+            try read(bytes, activeWidth: activeWidth, activeHeight: activeHeight)
+        }
+    }
+
+    private static func read(_ bytes: UnsafeRawBufferPointer, activeWidth: Int, activeHeight: Int) throws -> Self? {
         func fail(_ text: String) -> ParseError { .invalid(text) }
         guard bytes.count >= 8 else { throw fail(L10n.text("tiff_header")) }
         let little: Bool

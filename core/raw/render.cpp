@@ -10,6 +10,14 @@
 #include <stdexcept>
 #include <string>
 
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#if TARGET_OS_IOS
+#include <chrono>
+#include <os/log.h>
+#endif
+#endif
+
 namespace {
 
 class FilmEngine {
@@ -88,6 +96,16 @@ spektracam::RawFrame borrowFrame(const sc_raw_frame& input) {
 
 } // namespace
 
+int sc_prepare_raw() {
+    try {
+        spektracam::prepareRaw();
+        return 1;
+    } catch (const std::exception&) {
+        // The next real capture can retry initialization and report any error.
+        return 0;
+    }
+}
+
 int sc_render_raw(const sc_raw_frame* input, const char* root, const char* film,
                   const char* paper, const char* meter, uint8_t* rgba, size_t rgbaSize,
                   char* error, size_t errorSize) {
@@ -102,9 +120,26 @@ int sc_render_raw(const sc_raw_frame* input, const char* root, const char* film,
             throw std::invalid_argument("Unknown film exposure method");
         }
         const auto frame = borrowFrame(*input);
+#if defined(__APPLE__) && TARGET_OS_IOS
+        using Clock = std::chrono::steady_clock;
+        const auto start = Clock::now();
+#endif
         auto linear = spektracam::developRaw(frame);
+#if defined(__APPLE__) && TARGET_OS_IOS
+        const auto reconstructed = Clock::now();
+#endif
         static FilmEngine engine;
         engine.render(root, film, paper ? paper : "", method, frame, linear, rgba);
+#if defined(__APPLE__) && TARGET_OS_IOS
+        const auto finished = Clock::now();
+        char stages[2048]{};
+        spk_stage_timings(stages, sizeof(stages));
+        const auto ms = [](auto duration) { return std::chrono::duration<double, std::milli>(duration).count(); };
+        static const auto log = os_log_create("org.spektracam.app", "CaptureTiming");
+        os_log_with_type(log, OS_LOG_TYPE_DEFAULT,
+                         "Native capture ms: Bayer=%{public}.1f film/RGBA=%{public}.1f %{public}s",
+                         ms(reconstructed - start), ms(finished - reconstructed), stages);
+#endif
         return 1;
     } catch (const std::exception& failure) {
         if (error && errorSize) std::snprintf(error, errorSize, "%s", failure.what());

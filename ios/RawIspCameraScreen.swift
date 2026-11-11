@@ -220,6 +220,7 @@ struct CameraScreen: View {
     if model.previewRenderer.available {
       RawIspLutPreview(renderer: model.previewRenderer,
                        active: scenePhase == .active && !settings && gallery == nil,
+                       developing: model.busy && model.status == "developing_raw",
                        onFocus: focus)
     } else {
       CameraPreview(session: model.session, onFocus: focus)

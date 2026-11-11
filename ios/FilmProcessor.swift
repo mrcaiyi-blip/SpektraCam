@@ -5,37 +5,20 @@ import ImageIO
 import UIKit
 
 enum FilmProcessor {
-    static func warmUp(film: RawIspFilmLook, meter: String) {
-        guard let root = Bundle.main.resourceURL?.appendingPathComponent("spektra") else { return }
-        // Prime the native film graph with a small synthetic Bayer frame.
-        let side = 256
-        let raw = [UInt16](repeating: UInt16(512).littleEndian, count: side * side)
-        var rgba = [UInt8](repeating: 0, count: side * side * 4)
-        var frame = sc_raw_frame()
-        frame.width = UInt32(side)
-        frame.height = UInt32(side)
-        frame.row_stride = side * 2
-        frame.pixel_stride = 2
-        frame.size = raw.count * 2
-        frame.white = 4095
-        frame.white_balance = (1, 1, 1, 1)
-        frame.highlight_chroma_blend = 1
-        let capacity = rgba.count
-        var error = [CChar](repeating: 0, count: 512)
-        let ok = raw.withUnsafeBytes { source in
-            frame.data = source.bindMemory(to: UInt8.self).baseAddress
-            return sc_render_raw(&frame, root.path, film.id, film.paper, meter, &rgba, capacity, &error, error.count)
-        }
-        if ok != 1 { NSLog("[SpektraCam] Film warm-up skipped: %@", String(cString: error)) }
-    }
-
     static func render(_ photo: RawIspCapturedPhoto, film: RawIspFilmLook,
-                       meter: String, zoom: Double) throws -> UIImage {
+                       meter: String, zoom: Double) throws -> (image: UIImage, nativeTime: TimeInterval) {
         guard let root = Bundle.main.resourceURL?.appendingPathComponent("spektra") else {
             throw CameraFailure("resource_directory")
         }
-        let region = try nativeRawRegion(from: photo)
+        let encodedDng = dictionary(imageProperties(from: photo.dngData)?[kCGImagePropertyDNGDictionary as String])
+        let captureDng = dictionary(photo.metadata[kCGImagePropertyDNGDictionary as String])
         let buffer = photo.pixelBuffer
+        let region = try RawIspRawRegion(
+            bufferWidth: CVPixelBufferGetWidth(buffer), bufferHeight: CVPixelBufferGetHeight(buffer),
+            bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
+            activeArea: encodedDng?["ActiveArea"] ?? captureDng?["ActiveArea"])
+        let width = region.width, height = region.height
+        guard width <= 32 * 1024 * 1024 / height else { throw CameraFailure("raw_size_limit") }
         guard !CVPixelBufferIsPlanar(buffer),
               CVPixelBufferLockBaseAddress(buffer, .readOnly) == kCVReturnSuccess else {
             throw CameraFailure("read_raw_buffer")
@@ -46,9 +29,7 @@ enum FilmProcessor {
             packed = try region.packedBayerData(from: UnsafeRawBufferPointer(
                 start: CVPixelBufferGetBaseAddress(buffer), count: CVPixelBufferGetDataSize(buffer)))
         }
-        let width = region.width, height = region.height
-        guard width <= 32 * 1024 * 1024 / height else { throw CameraFailure("raw_size_limit") }
-        var frame = try makeRawMetadata(from: photo)
+        var frame = try makeRawMetadata(captureDng: captureDng, encodedDng: encodedDng)
         frame.width = UInt32(width)
         frame.height = UInt32(height)
         frame.row_stride = width * 2
@@ -70,6 +51,7 @@ enum FilmProcessor {
         var rgba = Data(count: width * height * 4)
         let capacity = rgba.count
         var error = [CChar](repeating: 0, count: 512)
+        let nativeStart = ProcessInfo.processInfo.systemUptime
         let ok = packed.withUnsafeBytes { (source: UnsafeRawBufferPointer) in
             frame.data = source.bindMemory(to: UInt8.self).baseAddress
             return rgba.withUnsafeMutableBytes { (destination: UnsafeMutableRawBufferPointer) in
@@ -81,6 +63,7 @@ enum FilmProcessor {
             NSLog("[SpektraCam] RAW development failed: %@", String(cString: error))
             throw CameraFailure("develop_failed")
         }
+        let nativeTime = ProcessInfo.processInfo.systemUptime - nativeStart
         guard let provider = CGDataProvider(data: rgba as CFData),
               let space = CGColorSpace(name: CGColorSpace.sRGB),
               let image = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
@@ -91,28 +74,20 @@ enum FilmProcessor {
         }
         let cropWidth = max(1, Int(Double(width) / zoom))
         let cropHeight = max(1, Int(Double(height) / zoom))
-        let cropped = image.cropping(to: CGRect(x: (width - cropWidth) / 2, y: (height - cropHeight) / 2,
-                                               width: cropWidth, height: cropHeight)) ?? image
+        let cropped = cropWidth == width && cropHeight == height ? image :
+            image.cropping(to: CGRect(x: (width - cropWidth) / 2, y: (height - cropHeight) / 2,
+                                      width: cropWidth, height: cropHeight)) ?? image
         let orientation = imageOrientation(for: photo.displayRotationDegrees)
+        if orientation == .up { return (UIImage(cgImage: cropped), nativeTime) }
         let swaps = orientation == .right || orientation == .left
         let size = CGSize(width: swaps ? cropped.height : cropped.width, height: swaps ? cropped.width : cropped.height)
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
         format.opaque = true
-        return UIGraphicsImageRenderer(size: size, format: format).image { _ in
+        let upright = UIGraphicsImageRenderer(size: size, format: format).image { _ in
             UIImage(cgImage: cropped, scale: 1, orientation: orientation).draw(in: CGRect(origin: .zero, size: size))
         }
-    }
-
-    private static func nativeRawRegion(from photo: RawIspCapturedPhoto) throws -> RawIspRawRegion {
-        let properties = imageProperties(from: photo.dngData)
-        let encoded = dictionary(properties?[kCGImagePropertyDNGDictionary as String])
-        let captured = dictionary(photo.metadata[kCGImagePropertyDNGDictionary as String])
-        return try RawIspRawRegion(
-            bufferWidth: CVPixelBufferGetWidth(photo.pixelBuffer),
-            bufferHeight: CVPixelBufferGetHeight(photo.pixelBuffer),
-            bytesPerRow: CVPixelBufferGetBytesPerRow(photo.pixelBuffer),
-            activeArea: encoded?["ActiveArea"] ?? captured?["ActiveArea"])
+        return (upright, nativeTime)
     }
 
     private static func imageOrientation(for rotationDegrees: Int32) -> UIImage.Orientation {
@@ -144,16 +119,10 @@ enum FilmProcessor {
     }
 
     private static func makeRawMetadata(
-        from photo: RawIspCapturedPhoto
+        captureDng: [String: Any]?,
+        encodedDng: [String: Any]?
     ) throws -> sc_raw_frame {
         var metadata = sc_raw_frame()
-        let encodedProperties = imageProperties(from: photo.dngData)
-        let captureDng = dictionary(
-            photo.metadata[kCGImagePropertyDNGDictionary as String]
-        )
-        let encodedDng = dictionary(
-            encodedProperties?[kCGImagePropertyDNGDictionary as String]
-        )
         var dng = captureDng ?? [:]
         encodedDng?.forEach { dng[$0.key] = $0.value }
 

@@ -208,6 +208,7 @@ final class RawIspLutPreviewRenderer: NSObject, AVCaptureVideoDataOutputSampleBu
 struct RawIspLutPreview: UIViewRepresentable {
     let renderer: RawIspLutPreviewRenderer
     var active: Bool
+    var developing: Bool
     let onFocus: (CGPoint, CGPoint) -> Void
 
     func makeCoordinator() -> PreviewFocusTap { PreviewFocusTap() }
@@ -216,12 +217,16 @@ struct RawIspLutPreview: UIViewRepresentable {
         let view = MTKView(frame: .zero, device: renderer.device)
         view.delegate = renderer; view.framebufferOnly = false
         view.colorPixelFormat = .bgra8Unorm
-        view.preferredFramesPerSecond = 30; view.clearColor = MTLClearColorMake(0, 0, 0, 1)
+        view.preferredFramesPerSecond = developing ? 15 : 30
+        view.clearColor = MTLClearColorMake(0, 0, 0, 1)
         view.isPaused = !active
         context.coordinator.install(on: view)
         return view
     }
     func updateUIView(_ view: MTKView, context: Context) {
+        // Keep the viewfinder live while giving the RAW and film passes more GPU time.
+        let framesPerSecond = developing ? 15 : 30
+        if view.preferredFramesPerSecond != framesPerSecond { view.preferredFramesPerSecond = framesPerSecond }
         view.isPaused = !active
         context.coordinator.action = { point, bounds in
             guard active, let target = renderer.focusPoint(at: point, in: bounds) else { return }

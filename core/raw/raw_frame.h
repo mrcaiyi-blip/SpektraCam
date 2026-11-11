@@ -37,6 +37,7 @@ struct RawFrame {
 
 void validateRaw(const RawFrame& frame);
 void expandRaw(const RawFrame& frame, uint32_t* destination);
+void prepareRaw();
 
 // Contains interleaved, scene-linear ProPhoto RGB with highlight headroom.
 std::vector<float> developRaw(const RawFrame& frame);
