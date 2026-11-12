@@ -4,9 +4,9 @@
 
 SpektraCam 是一款面向 **Android 和 iOS** 的胶片模拟相机。选好胶卷和相纸后，可以在取景器中实时查看色彩。按下快门拍摄一张 Bayer RAW，由 SpektraFilm 在设备上显影，最终把 JPEG 存入系统相册。
 
-| 取景器 | 胶片和相纸选择 |
-| :---: | :---: |
-| <img src="docs/images/android-viewfinder.jpg" width="270" alt="SpektraCam 的 Android 取景器"> | <img src="docs/images/android-film-selection.jpg" width="270" alt="SpektraCam 的 Android 胶片和相纸选择页"> |
+| 取景器 | 胶卷、相纸、边框与文字 | 成片查看 |
+| :---: | :---: | :---: |
+| <img src="docs/images/android-viewfinder.jpg" width="270" alt="SpektraCam 的 Android 取景器"> | <img src="docs/images/ios-film-selection-zh-Hans.jpg" width="270" alt="SpektraCam 的 iOS 胶卷、相纸、边框与文字设置页"> | <img src="docs/images/ios-photo-viewer-zh-Hans.jpg" width="270" alt="SpektraCam 的 iOS 成片查看页，照片带边框，底部印有胶卷名"> |
 
 | Kodak Portra 400 | Fujifilm Provia 100F | Kodak Vision3 500T |
 | :---: | :---: | :---: |

@@ -4,9 +4,9 @@
 
 SpektraCam is a film-simulation camera for **Android and iOS**. Choose a film stock and print medium, frame the shot with a live color preview, and take a single Bayer RAW exposure. SpektraFilm develops it on the device and saves a JPEG to the system photo library.
 
-| Viewfinder | Film and paper selection |
-| :---: | :---: |
-| <img src="docs/images/android-viewfinder.jpg" width="270" alt="SpektraCam viewfinder on Android"> | <img src="docs/images/android-film-selection.jpg" width="270" alt="SpektraCam film and paper selection on Android"> |
+| Viewfinder | Film, paper, border, and caption | Finished photo |
+| :---: | :---: | :---: |
+| <img src="docs/images/android-viewfinder.jpg" width="270" alt="SpektraCam viewfinder on Android"> | <img src="docs/images/ios-film-selection-en-US.jpg" width="270" alt="SpektraCam film, paper, border, and caption settings on iOS"> | <img src="docs/images/ios-photo-viewer-en-US.jpg" width="270" alt="SpektraCam photo viewer on iOS showing a bordered photo with the film name printed below it"> |
 
 | Kodak Portra 400 | Fujifilm Provia 100F | Kodak Vision3 500T |
 | :---: | :---: | :---: |
