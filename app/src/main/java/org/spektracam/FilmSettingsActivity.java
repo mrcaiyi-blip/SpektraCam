@@ -13,6 +13,7 @@ import android.view.Gravity;
 import android.view.WindowManager;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.Switch;
 import android.widget.TextView;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -24,6 +25,7 @@ import org.json.JSONObject;
 public final class FilmSettingsActivity extends LocalizedActivity {
     private static final int BG = 0xff0b0d11, CARD = 0xff171b21, TEXT = 0xfff4f5f6;
     private static final int MUTED = 0xff9aa3ad, ACCENT = 0xffe6bc70;
+    private static final String SHUTTER_SOUND = "shutter_sound_enabled";
     private static final String[] IDS = {"histogram_middle_gray", "center_weighted", "matrix", "multi_zone",
             "partial", "highlight_weighted", "median", "average"};
     private static final int[] TITLES = {R.string.histogram_gray, R.string.center_weighted,
@@ -38,6 +40,10 @@ public final class FilmSettingsActivity extends LocalizedActivity {
     private JSONObject supportLinks;
 
     static String meter(SharedPreferences preferences) { return IDS[meterIndex(preferences)]; }
+
+    static boolean shutterSoundEnabled(SharedPreferences preferences) {
+        return preferences.getBoolean(SHUTTER_SOUND, false);
+    }
 
     private static int meterIndex(SharedPreferences preferences) {
         String method = preferences.getString("film_exposure_method", IDS[0]);
@@ -56,6 +62,20 @@ public final class FilmSettingsActivity extends LocalizedActivity {
 
     private void settings() {
         page(getString(R.string.settings_title), false, this::finish);
+        LinearLayout capture = section(getString(R.string.capture_settings));
+        boolean soundRequired = RawCamera.mustPlayShutterSound();
+        Switch shutterSound = new Switch(this);
+        shutterSound.setText(R.string.shutter_sound);
+        shutterSound.setTextColor(TEXT);
+        shutterSound.setTextSize(15);
+        shutterSound.setMinimumHeight(dp(48));
+        shutterSound.setChecked(soundRequired || shutterSoundEnabled(preferences));
+        shutterSound.setEnabled(!soundRequired);
+        shutterSound.setOnCheckedChangeListener((button, enabled) ->
+                preferences.edit().putBoolean(SHUTTER_SOUND, enabled).apply());
+        capture.addView(shutterSound, new LinearLayout.LayoutParams(-1, -2));
+        if (soundRequired) note(capture, getString(R.string.shutter_sound_required));
+
         LinearLayout film = section(getString(R.string.film_settings));
         row(film, getString(R.string.auto_exposure), getString(TITLES[meterIndex(preferences)]) + "  ›", this::meterPage);
         note(film, getString(R.string.meter_description));

@@ -52,13 +52,15 @@ final class CaptureGalleryStore {
         final Uri uri;
         final String primary;
         final String secondary;
+        final FilmBorder border;
         final long date;
         final File localCopy;
 
-        Photo(Uri uri, String primary, String secondary, long date, File localCopy) {
+        Photo(Uri uri, String primary, String secondary, long date, File localCopy, FilmBorder border) {
             this.uri = uri;
             this.primary = primary;
             this.secondary = secondary;
+            this.border = border;
             this.date = date;
             this.localCopy = localCopy;
         }
@@ -68,12 +70,13 @@ final class CaptureGalleryStore {
         return context.getSharedPreferences("capture_gallery", Context.MODE_PRIVATE);
     }
 
-    static Photo remember(Context context, Uri uri, File localCopy, String primary, String secondary) {
-        Photo photo = new Photo(uri, primary, secondary, System.currentTimeMillis(), localCopy);
+    static Photo remember(Context context, Uri uri, File localCopy, String primary, String secondary, FilmBorder border) {
+        Photo photo = new Photo(uri, primary, secondary, System.currentTimeMillis(), localCopy, border);
         try {
             JSONObject record = new JSONObject();
             record.put("primary", primary);
             record.put("secondary", secondary);
+            record.put("border", border.id);
             record.put("date", photo.date);
             if (localCopy != null) record.put("local", localCopy.getAbsolutePath());
             index(context).edit().putString(uri.toString(), record.toString()).apply();
@@ -173,7 +176,8 @@ final class CaptureGalleryStore {
                 if (!"content".equals(uri.getScheme())) continue;
                 String local = record.optString("local");
                 found.put(uri, new Photo(uri, record.optString("primary"), record.optString("secondary"),
-                        record.optLong("date"), local.isEmpty() ? null : new File(local)));
+                        record.optLong("date"), local.isEmpty() ? null : new File(local),
+                        FilmBorder.fromId(record.optString("border"))));
             } catch (JSONException ignored) {
                 // An unreadable record does not prevent other captures from loading.
             }
@@ -190,7 +194,7 @@ final class CaptureGalleryStore {
                 if (cursor != null) {
                     while (cursor.moveToNext()) {
                         Uri uri = ContentUris.withAppendedId(collection, cursor.getLong(0));
-                        found.putIfAbsent(uri, new Photo(uri, "", "", cursor.getLong(1) * 1000, null));
+                        found.putIfAbsent(uri, new Photo(uri, "", "", cursor.getLong(1) * 1000, null, null));
                     }
                 }
             } catch (RuntimeException error) {

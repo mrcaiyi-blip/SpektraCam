@@ -11,7 +11,7 @@ add_subdirectory(.. core)
 
 add_executable(SpektraCam MACOSX_BUNDLE
     CaptureGallery.swift Localization.swift
-    SpektraCamApp.swift FilmSettingsView.swift CameraCapture.swift FilmProcessor.swift
+    SpektraCamApp.swift FilmSettingsView.swift CameraCapture.swift FilmProcessor.swift FilmBorder.swift
     RawIspCameraScreen.swift RawIspCameraSelection.swift RawIspFilmLook.swift
     RawIspDngStage3Vignette.swift RawIspRawRegion.swift RawIspLutPreview.swift RawIspLutCube.swift)
 set_target_properties(SpektraCam PROPERTIES

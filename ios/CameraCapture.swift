@@ -32,6 +32,8 @@ struct CameraLens {
 }
 
 final class CameraCapture: NSObject, AVCapturePhotoCaptureDelegate {
+    static let shutterSoundPreference = "shutter_sound_enabled"
+
     let session = AVCaptureSession()
     private let output = AVCapturePhotoOutput()
     private let video = AVCaptureVideoDataOutput()
@@ -150,7 +152,7 @@ final class CameraCapture: NSObject, AVCapturePhotoCaptureDelegate {
                 self.format = raw
                 self.device = device
                 // Allocate RAW capture resources while configuring the lens, before the first shutter press.
-                self.output.setPreparedPhotoSettingsArray([AVCapturePhotoSettings(rawPixelFormatType: raw)],
+                self.output.setPreparedPhotoSettingsArray([self.rawPhotoSettings(format: raw)],
                                                           completionHandler: nil)
                 accepted = true
                 return device
@@ -162,7 +164,7 @@ final class CameraCapture: NSObject, AVCapturePhotoCaptureDelegate {
         }
     }
 
-    func setRunning(_ running: Bool, completion: @escaping (Bool) -> Void) {
+    func setRunning(_ running: Bool, completion: @escaping (_ running: Bool, _ canMuteShutter: Bool) -> Void) {
         queue.async {
             if running && self.format != nil && !self.session.isRunning { self.session.startRunning() }
             if !running && self.session.isRunning {
@@ -172,8 +174,21 @@ final class CameraCapture: NSObject, AVCapturePhotoCaptureDelegate {
                 }
                 self.session.stopRunning()
             }
-            completion(self.session.isRunning)
+            completion(self.session.isRunning, self.format != nil && self.canMuteShutter)
         }
+    }
+
+    private var canMuteShutter: Bool {
+        if #available(iOS 18.0, *) { return output.isShutterSoundSuppressionSupported }
+        return false
+    }
+
+    private func rawPhotoSettings(format: OSType) -> AVCapturePhotoSettings {
+        let settings = AVCapturePhotoSettings(rawPixelFormatType: format)
+        if #available(iOS 18.0, *), canMuteShutter {
+            settings.isShutterSoundSuppressionEnabled = !UserDefaults.standard.bool(forKey: Self.shutterSoundPreference)
+        }
+        return settings
     }
 
     func adjust(_ change: @escaping (AVCaptureDevice) throws -> Void,
@@ -194,7 +209,7 @@ final class CameraCapture: NSObject, AVCapturePhotoCaptureDelegate {
             guard let format = self.format, self.session.isRunning, self.request == nil else {
                 completion(.failure(CameraFailure("raw_not_ready"))); return
             }
-            let settings = AVCapturePhotoSettings(rawPixelFormatType: format)
+            let settings = self.rawPhotoSettings(format: format)
             self.request = (settings.uniqueID, rotation, completion)
             self.processed = nil
             self.output.capturePhoto(with: settings, delegate: self)

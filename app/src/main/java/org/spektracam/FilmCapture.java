@@ -4,6 +4,7 @@ import android.content.Context;
 import android.content.res.AssetManager;
 import android.graphics.Bitmap;
 import android.graphics.Matrix;
+import android.graphics.Rect;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CaptureResult;
 import android.hardware.camera2.params.BlackLevelPattern;
@@ -41,7 +42,7 @@ final class FilmCapture {
 
     static Bitmap render(Context context, RawCamera.Lens lens, RawCamera.Frame raw,
             CaptureResult result, FilmLook look, String meter,
-            float zoom, int rotation) throws IOException {
+            float zoom, int rotation, FilmBorder border, FilmBorder.Caption caption) throws IOException {
         CameraCharacteristics info = lens.info;
         Integer cfa = info.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT);
         float[] black = result.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL);
@@ -83,6 +84,12 @@ final class FilmCapture {
                     true, assets.getPath(), look.id, look.paper, meter, bitmap);
             if (error != null) throw new IOException(error);
             int[] crop = DigitalZoom.crop(raw.width, raw.height, zoom);
+            if (border != FilmBorder.NONE) {
+                Bitmap framed = border.render(bitmap,
+                        new Rect(crop[0], crop[1], crop[0] + crop[2], crop[1] + crop[3]), rotation, caption);
+                bitmap.recycle();
+                return framed;
+            }
             Matrix rotate = new Matrix();
             rotate.setRotate(rotation);
             Bitmap finalImage = Bitmap.createBitmap(bitmap, crop[0], crop[1], crop[2], crop[3], rotate, false);

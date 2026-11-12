@@ -81,6 +81,18 @@
     <string name="preview_failed">Live preview is unavailable.</string>
     <string name="print_film">Print film</string>
     <string name="print_paper">Paper</string>
+    <string name="film_border">Border</string>
+    <string name="film_border_none">No border</string>
+    <string name="film_border_print">Print edge</string>
+    <string name="film_border_strip">135 strip</string>
+    <string name="film_border_instant">Instant</string>
+    <string name="film_border_text">Border text</string>
+    <string name="film_border_text_default">Default</string>
+    <string name="film_border_text_hidden">Hidden</string>
+    <string name="film_border_text_film">Film name</string>
+    <string name="film_border_text_custom">Custom</string>
+    <string name="film_border_text_placeholder">Enter border text</string>
+    <string name="photo_border_metadata">Border · %1$s</string>
     <string name="profile_license">Film profile license</string>
     <string name="publish_photo">Could not finish saving the photo.</string>
     <string name="qq_group">QQ group</string>
@@ -98,7 +110,7 @@
     <string name="read_raw_data">Could not read RAW data.</string>
     <string name="read_raw_lenses">Could not read RAW lenses.</string>
     <string name="reset">Reset</string>
-    <string name="return_to_camera">Apply film and return to the camera</string>
+    <string name="return_to_camera">Apply selection and return to the camera</string>
     <string name="reversal_short">Reversal</string>
     <string name="sample_caption">%1$s · %2$s · Color preview</string>
     <string name="sample_photo">Sample photo</string>
@@ -106,6 +118,9 @@
     <string name="save_permission">Allow photo saving in system settings.</string>
     <string name="settings">Settings</string>
     <string name="settings_title">Settings</string>
+    <string name="capture_settings">Capture</string>
+    <string name="shutter_sound">Shutter sound</string>
+    <string name="shutter_sound_required">Android requires the shutter sound on this device.</string>
     <string name="share">Share</string>
     <string name="share_failed">Could not share the photo.</string>
     <string name="share_photo">Share photo</string>

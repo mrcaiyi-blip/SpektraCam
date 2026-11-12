@@ -78,6 +78,7 @@ public final class MainActivity extends LocalizedActivity {
     private CameraManager manager;
     private List<FilmLook> films = java.util.Collections.emptyList();
     private FilmLook film;
+    private FilmBorder filmBorder = FilmBorder.NONE;
     private List<RawCamera.Lens> allLenses = java.util.Collections.emptyList(), lenses = java.util.Collections.emptyList();
     private RawCamera.Lens lens;
     private RawCamera camera;
@@ -105,6 +106,8 @@ public final class MainActivity extends LocalizedActivity {
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         preferences = getSharedPreferences("capture_settings", MODE_PRIVATE);
+        FilmBorder savedBorder = FilmBorder.fromId(preferences.getString(FilmBorder.PREFERENCE_KEY, null));
+        if (savedBorder != null) filmBorder = savedBorder;
         manager = getSystemService(CameraManager.class);
         ui = new CameraUi(this);
         try {
@@ -410,6 +413,7 @@ public final class MainActivity extends LocalizedActivity {
         left.addView(thumbnail, new FrameLayout.LayoutParams(dp(48), dp(48), Gravity.CENTER));
         shutter = ui.button("");
         shutter.setContentDescription(getString(R.string.take_raw));
+        shutter.setSoundEffectsEnabled(false);
         GradientDrawable fill = new GradientDrawable(), ring = new GradientDrawable();
         fill.setShape(GradientDrawable.OVAL); fill.setColor(ui.ink); fill.setStroke(dp(5), ui.bg);
         ring.setShape(GradientDrawable.OVAL); ring.setColor(ui.bg); ring.setStroke(dp(1), ui.ink);
@@ -467,7 +471,8 @@ public final class MainActivity extends LocalizedActivity {
         if (lens == null) return;
         final int attempt = ++generation;
         cameraReady = firstFrame = false;
-        final RawCamera next = new RawCamera(this, manager, lens, main, new RawCamera.Listener() {
+        final RawCamera next = new RawCamera(this, manager, lens, main,
+                FilmSettingsActivity.shutterSoundEnabled(preferences), new RawCamera.Listener() {
             @Override public void ready() {
                 if (generation != attempt) return;
                 cameraReady = true;
@@ -640,6 +645,8 @@ public final class MainActivity extends LocalizedActivity {
         refreshControls();
         showStatus(getString(R.string.developing_raw));
         FilmLook selected = film;
+        FilmBorder selectedBorder = filmBorder;
+        FilmBorder.Caption borderCaption = FilmBorder.TextSettings.read(preferences).caption(selectedBorder, selected.title);
         String meter = FilmSettingsActivity.meter(preferences);
         RawCamera.Lens capturedLens = lens;
         float crop = zoomPolicy.cropRatio(zoom);
@@ -652,11 +659,12 @@ public final class MainActivity extends LocalizedActivity {
                 Bitmap photo = null;
                 try {
                     long renderStart = android.os.SystemClock.elapsedRealtime();
-                    photo = FilmCapture.render(getApplicationContext(), capturedLens, raw, metadata, selected, meter, crop, degrees);
+                    photo = FilmCapture.render(getApplicationContext(), capturedLens, raw, metadata,
+                            selected, meter, crop, degrees, selectedBorder, borderCaption);
                     long rendered = android.os.SystemClock.elapsedRealtime();
                     Uri uri = save(photo);
                     CaptureGalleryStore.Photo entry = CaptureGalleryStore.remember(this, uri, null, selected.title,
-                            selected.paper.isEmpty() ? "direct_scan" : selected.finishTitle);
+                            selected.paper.isEmpty() ? "direct_scan" : selected.finishTitle, selectedBorder);
                     Bitmap small = CaptureGalleryStore.cornerThumbnail(photo, 320);
                     try {
                         CaptureGalleryStore.cacheLatestPreview(entry, photo);
@@ -750,10 +758,14 @@ public final class MainActivity extends LocalizedActivity {
 
     private void showChooser() {
         if (locked() || chooser != null) return;
-        chooser = new FilmChooserView(this, films, film, selected -> {
+        chooser = new FilmChooserView(this, films, film, filmBorder, FilmBorder.TextSettings.read(preferences), (selected, border, borderText) -> {
             film = selected;
+            filmBorder = border;
             preferences.edit().putString("selected_film", selected.id)
-                    .putString("selected_print", selected.paper).apply();
+                    .putString("selected_print", selected.paper)
+                    .putString(FilmBorder.PREFERENCE_KEY, border.id)
+                    .putString(FilmBorder.TEXT_MODE_KEY, borderText.mode().id)
+                    .putString(FilmBorder.CUSTOM_TEXT_KEY, borderText.custom()).apply();
             ui.updateCameraButton(filmButton, film);
             if (preview != null) preview.setLut(film.previewLut());
             closeChooser();

@@ -64,6 +64,7 @@ final class CameraViewModel: ObservableObject {
 
     @Published private(set) var films: [RawIspFilmLook] = []
     @Published private(set) var film: RawIspFilmLook?
+    private(set) var filmBorder = FilmBorder(rawValue: UserDefaults.standard.string(forKey: FilmBorder.preferenceKey) ?? "") ?? .none
     @Published private(set) var status = "starting_camera"
     @Published private(set) var busy = false
     @Published private(set) var countdown = 0
@@ -73,6 +74,7 @@ final class CameraViewModel: ObservableObject {
     @Published private(set) var maxEv: Float = 0
     @Published private(set) var hasTorch = false
     @Published private(set) var torch = false
+    @Published private(set) var canMuteShutter = false
     @Published private(set) var resultImage: UIImage?
     private var currentMeter: FilmMeter {
         FilmMeter(rawValue: UserDefaults.standard.string(forKey: "film_exposure_method") ?? "") ?? .histogramMiddleGray
@@ -186,7 +188,7 @@ final class CameraViewModel: ObservableObject {
         runningRequest += 1
         let request = runningRequest
         if !active { sessionRunning = false }
-        capture.setRunning(active) { running in
+        capture.setRunning(active) { running, canMuteShutter in
             Task { @MainActor in
                 guard self.runningRequest == request else { return }
                 // Compile the Bayer shaders before the first shot. A speculative
@@ -196,15 +198,25 @@ final class CameraViewModel: ObservableObject {
                     self.development.async { _ = sc_prepare_raw() }
                 }
                 self.sessionRunning = running
+                self.canMuteShutter = canMuteShutter
             }
         }
     }
 
-    func select(_ value: RawIspFilmLook) {
+    private func select(_ value: RawIspFilmLook) {
         film = value
         UserDefaults.standard.set(value.id, forKey: "selected_film")
         UserDefaults.standard.set(value.paper, forKey: "selected_print")
         previewRenderer.setFilm(value)
+    }
+
+    func applyFilmSelection(_ film: RawIspFilmLook, _ border: FilmBorder, _ borderText: FilmBorder.TextSettings) {
+        filmBorder = border
+        let preferences = UserDefaults.standard
+        preferences.set(border.rawValue, forKey: FilmBorder.preferenceKey)
+        preferences.set(borderText.mode.rawValue, forKey: FilmBorder.textModeKey)
+        preferences.set(borderText.custom, forKey: FilmBorder.customTextKey)
+        select(film)
     }
 
     func setZoom(_ value: Double) {
@@ -301,6 +313,8 @@ final class CameraViewModel: ObservableObject {
     private func takePhoto() {
         guard canCapture, let film else { return }
         let meter = currentMeter.rawValue
+        let border = filmBorder
+        let borderCaption = FilmBorder.TextSettings.current.caption(for: border, film: film.title)
         let crop = max(1, zoom / (selectedLens?.zoom ?? 1))
         let orientation = UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.interfaceOrientation }.first
         let rotation = CameraPanelRotation.jpegDegrees(for: orientation ?? .portrait)
@@ -312,12 +326,14 @@ final class CameraViewModel: ObservableObject {
             self.development.async {
                 do {
                     let raw = try result.get()
-                    let (image, nativeTime) = try FilmProcessor.render(raw, film: film, meter: meter, zoom: crop)
+                    let (image, nativeTime) = try FilmProcessor.render(raw, film: film, meter: meter, zoom: crop,
+                                                                      border: border, caption: borderCaption)
                     let rendered = ProcessInfo.processInfo.systemUptime
                     guard let jpeg = image.jpegData(compressionQuality: 0.96) else {
                         throw CameraFailure("encode_jpeg")
                     }
-                    let photo = try CaptureArchive.save(jpeg, primary: film.title, secondary: film.paper.isEmpty ? "direct_scan" : film.finishTitle)
+                    let photo = try CaptureArchive.save(jpeg, primary: film.title,
+                        secondary: film.paper.isEmpty ? "direct_scan" : film.finishTitle, border: border)
                     let preview = CaptureArchive.downsample(image, pixels: 1280)
                     let thumbnail = CaptureArchive.centerSquare(preview).map { CaptureArchive.downsample($0, pixels: 320) }
                     let dngTime = raw.dngEncodingTime

@@ -2,9 +2,11 @@ import SwiftUI
 import UIKit
 
 struct FilmSettingsView: View {
+    let canMuteShutter: Bool
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @AppStorage("film_exposure_method") private var meter = FilmMeter.histogramMiddleGray
+    @AppStorage(CameraCapture.shutterSoundPreference) private var shutterSoundEnabled = false
     @State private var page: Page?
     @State private var failedSupportLink: SupportLink?
     @AppStorage(L10n.preferenceKey) private var language = "system"
@@ -37,6 +39,15 @@ struct FilmSettingsView: View {
                                 .textSelection(.enabled)
                         }
                     case nil:
+                        section(L10n.text("capture_settings")) {
+                            if canMuteShutter {
+                                Toggle(L10n.text("shutter_sound"), isOn: $shutterSoundEnabled)
+                            } else {
+                                Text(L10n.text("shutter_sound"))
+                                Text(L10n.text("shutter_sound_unavailable"))
+                                    .font(.caption).foregroundColor(muted)
+                            }
+                        }
                         section(L10n.text("film_settings")) {
                             row(L10n.text("auto_exposure"), value: meter.title + "  ›") { page = .metering }
                             Text(L10n.text("meter_description"))

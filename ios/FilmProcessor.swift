@@ -6,7 +6,8 @@ import UIKit
 
 enum FilmProcessor {
     static func render(_ photo: RawIspCapturedPhoto, film: RawIspFilmLook,
-                       meter: String, zoom: Double) throws -> (image: UIImage, nativeTime: TimeInterval) {
+                       meter: String, zoom: Double, border: FilmBorder,
+                       caption: FilmBorder.Caption) throws -> (image: UIImage, nativeTime: TimeInterval) {
         guard let root = Bundle.main.resourceURL?.appendingPathComponent("spektra") else {
             throw CameraFailure("resource_directory")
         }
@@ -78,16 +79,8 @@ enum FilmProcessor {
             image.cropping(to: CGRect(x: (width - cropWidth) / 2, y: (height - cropHeight) / 2,
                                       width: cropWidth, height: cropHeight)) ?? image
         let orientation = imageOrientation(for: photo.displayRotationDegrees)
-        if orientation == .up { return (UIImage(cgImage: cropped), nativeTime) }
-        let swaps = orientation == .right || orientation == .left
-        let size = CGSize(width: swaps ? cropped.height : cropped.width, height: swaps ? cropped.width : cropped.height)
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = 1
-        format.opaque = true
-        let upright = UIGraphicsImageRenderer(size: size, format: format).image { _ in
-            UIImage(cgImage: cropped, scale: 1, orientation: orientation).draw(in: CGRect(origin: .zero, size: size))
-        }
-        return (upright, nativeTime)
+        let oriented = UIImage(cgImage: cropped, scale: 1, orientation: orientation)
+        return (border.render(oriented, caption: caption), nativeTime)
     }
 
     private static func imageOrientation(for rotationDegrees: Int32) -> UIImage.Orientation {

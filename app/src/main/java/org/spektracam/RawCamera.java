@@ -21,6 +21,7 @@ import android.hardware.camera2.params.SessionConfiguration;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.Image;
 import android.media.ImageReader;
+import android.media.MediaActionSound;
 import android.os.Build;
 import android.os.Handler;
 import android.util.Log;
@@ -136,9 +137,11 @@ final class RawCamera implements AutoCloseable {
     private final Lens lens;
     private final Handler handler;
     private final Listener listener;
+    private final boolean playShutterSound;
     private CameraDevice device;
     private CameraCaptureSession session;
     private ImageReader reader;
+    private MediaActionSound shutterSound;
     private Surface preview;
     private boolean closed, torch;
     private int compensation;
@@ -174,16 +177,32 @@ final class RawCamera implements AutoCloseable {
         Pending(Shot callback) { this.callback = callback; }
     }
 
-    RawCamera(Context context, CameraManager manager, Lens lens, Handler handler, Listener listener) {
+    RawCamera(Context context, CameraManager manager, Lens lens, Handler handler,
+              boolean shutterSoundEnabled, Listener listener) {
         this.context = context;
         this.manager = manager;
         this.lens = lens;
         this.handler = handler;
         this.listener = listener;
+        playShutterSound = shutterSoundEnabled || mustPlayShutterSound();
         List<CaptureRequest.Key<?>> physicalKeys = Build.VERSION.SDK_INT >= 28 && lens.physicalId != null
                 ? lens.controls.getAvailablePhysicalCameraRequestKeys() : null;
         physicalFocus = physicalKeys != null && physicalKeys.containsAll(Arrays.asList(
                 CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_REGIONS));
+    }
+
+    @SuppressWarnings("deprecation")
+    static boolean mustPlayShutterSound() {
+        if (Build.VERSION.SDK_INT >= 33) return MediaActionSound.mustPlayShutterSound();
+        // Older Android exposes this device-wide policy through CameraInfo.
+        try {
+            if (android.hardware.Camera.getNumberOfCameras() == 0) return false;
+            android.hardware.Camera.CameraInfo info = new android.hardware.Camera.CameraInfo();
+            android.hardware.Camera.getCameraInfo(0, info);
+            return !info.canDisableShutterSound;
+        } catch (RuntimeException error) {
+            return false;
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -222,7 +241,17 @@ final class RawCamera implements AutoCloseable {
                     if (closed) { configured.close(); return; }
                     session = configured;
                     setControls(compensation, torch);
-                    if (!closed) listener.ready();
+                    if (!closed) {
+                        if (playShutterSound) {
+                            try {
+                                shutterSound = new MediaActionSound();
+                                shutterSound.load(MediaActionSound.SHUTTER_CLICK);
+                            } catch (RuntimeException error) {
+                                Log.w("SpektraCam", "Could not preload shutter sound", error);
+                            }
+                        }
+                        listener.ready();
+                    }
                 }
                 @Override public void onConfigureFailed(CameraCaptureSession failed) {
                     fail(context.getString(R.string.raw_preview_unsupported));
@@ -369,6 +398,17 @@ final class RawCamera implements AutoCloseable {
                 request.set(CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE, CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE_ON);
             }
             session.capture(request.build(), new CameraCaptureSession.CaptureCallback() {
+                @Override public void onCaptureStarted(CameraCaptureSession session, CaptureRequest request,
+                                                       long timestamp, long frameNumber) {
+                    if (pending == shot && shutterSound != null) {
+                        try {
+                            shutterSound.play(MediaActionSound.SHUTTER_CLICK);
+                        } catch (RuntimeException error) {
+                            Log.w("SpektraCam", "Could not play shutter sound", error);
+                        }
+                    }
+                }
+
                 @Override public void onCaptureCompleted(CameraCaptureSession session, CaptureRequest request, TotalCaptureResult result) {
                     if (pending != shot) return;
                     shot.result = result;
@@ -440,6 +480,7 @@ final class RawCamera implements AutoCloseable {
         if (session != null) session.close();
         if (device != null) device.close();
         if (reader != null) reader.close();
+        if (shutterSound != null) { shutterSound.release(); shutterSound = null; }
         if (pending != null) complete(pending, context.getString(R.string.camera_closed));
     }
 }

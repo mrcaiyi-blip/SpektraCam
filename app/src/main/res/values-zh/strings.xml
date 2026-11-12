@@ -81,6 +81,18 @@
     <string name="preview_failed">实时取景不可用</string>
     <string name="print_film">印片</string>
     <string name="print_paper">相纸</string>
+    <string name="film_border">边框</string>
+    <string name="film_border_none">无边框</string>
+    <string name="film_border_print">相纸边</string>
+    <string name="film_border_strip">135 齿孔</string>
+    <string name="film_border_instant">拍立得</string>
+    <string name="film_border_text">边框文字</string>
+    <string name="film_border_text_default">默认</string>
+    <string name="film_border_text_hidden">隐藏</string>
+    <string name="film_border_text_film">胶卷名</string>
+    <string name="film_border_text_custom">自定义</string>
+    <string name="film_border_text_placeholder">输入边框文字</string>
+    <string name="photo_border_metadata">边框 · %1$s</string>
     <string name="profile_license">胶片配置许可</string>
     <string name="publish_photo">无法发布照片</string>
     <string name="qq_group">QQ 群</string>
@@ -98,7 +110,7 @@
     <string name="read_raw_data">无法读取 RAW 数据</string>
     <string name="read_raw_lenses">无法读取 RAW 镜头</string>
     <string name="reset">重置</string>
-    <string name="return_to_camera">应用胶片并返回拍摄</string>
+    <string name="return_to_camera">应用选项并返回拍摄</string>
     <string name="reversal_short">彩色正片</string>
     <string name="sample_caption">%1$s · %2$s · 色彩示意</string>
     <string name="sample_photo">示意照片</string>
@@ -106,6 +118,9 @@
     <string name="save_permission">请在系统设置中允许保存照片</string>
     <string name="settings">全局设置</string>
     <string name="settings_title">设置</string>
+    <string name="capture_settings">拍摄</string>
+    <string name="shutter_sound">快门声音</string>
+    <string name="shutter_sound_required">此设备的 Android 系统要求播放快门声音。</string>
     <string name="share">分享</string>
     <string name="share_failed">无法分享照片</string>
     <string name="share_photo">分享照片</string>

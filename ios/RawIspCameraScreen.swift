@@ -20,7 +20,12 @@ struct CameraScreen: View {
   var body: some View {
     GeometryReader { geometry in
       let landscape = geometry.size.width > geometry.size.height
-      cameraPanel(landscape: landscape)
+      let angle = panelAngle(landscape: landscape)
+      cameraPanel(angle: angle)
+        .frame(width: landscape ? geometry.size.height : geometry.size.width,
+               height: landscape ? geometry.size.width : geometry.size.height)
+        .rotationEffect(.degrees(angle))
+        .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
     }
     .onAppear {
       UIDevice.current.beginGeneratingDeviceOrientationNotifications()
@@ -37,7 +42,8 @@ struct CameraScreen: View {
     .foregroundColor(p.ink).background(p.background.ignoresSafeArea()).buttonStyle(.plain)
     .fullScreenCover(isPresented: $selection) {
       if let film = model.film {
-        FilmSelectionScreen(films: model.films, selected: film, apply: model.select)
+        FilmSelectionScreen(films: model.films, selected: film, selectedBorder: model.filmBorder,
+                            apply: model.applyFilmSelection)
           .environment(\.locale, locale)
       }
     }
@@ -49,7 +55,9 @@ struct CameraScreen: View {
                            index: model.galleryIndex)
         .environment(\.locale, locale)
     }
-    .fullScreenCover(isPresented: $settings) { FilmSettingsView().environment(\.locale, locale) }
+    .fullScreenCover(isPresented: $settings) {
+      FilmSettingsView(canMuteShutter: model.canMuteShutter).environment(\.locale, locale)
+    }
     .sheet(isPresented: $exposure) {
       VStack(spacing: 24) {
         Text(L10n.text("exposure_compensation")).font(.headline)
@@ -65,8 +73,8 @@ struct CameraScreen: View {
     .task { model.prepare(); model.refreshGalleryThumbnail() }
     .onChange(of: scenePhase) { phase in model.setActive(phase == .active && gallery == nil) }
   }
-  // The live camera supplies a portrait-oriented image. Rotate that image to match the device.
-  private func previewAngle(landscape: Bool) -> Double {
+  // Keep the portrait panel anchored to the device, as in LutCam.
+  private func panelAngle(landscape: Bool) -> Double {
     let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
       .first { $0.windows.contains { $0.isKeyWindow } }
     let orientation = scene?.interfaceOrientation
@@ -81,10 +89,11 @@ struct CameraScreen: View {
     return orientation == .portraitUpsideDown ? Double(CameraPanelRotation.angle(for: .portraitUpsideDown)) : 0
   }
 
-  private func cameraPanel(landscape: Bool) -> some View {
+  private func cameraPanel(angle: Double) -> some View {
     VStack(spacing: 0) {
       HStack(spacing: 0) {
         quick("arrow.triangle.2.circlepath.camera", L10n.text("switch_camera")) { model.switchFacing() }
+          .rotationEffect(.degrees(-angle))
           .disabled(!model.canSwitchFacing)
           .accessibilityHint(model.canSwitchFacing ? "" : L10n.text("opposite_no_raw"))
         Spacer()
@@ -100,12 +109,20 @@ struct CameraScreen: View {
         quick("slider.horizontal.3", L10n.text("settings")) { settings = true }
       }.padding(.horizontal, 10).frame(height: 54).disabled(model.busy)
       GeometryReader { geometry in
-        let size = fittedPreview(geometry.size, aspect: landscape ? 4.0 / 3.0 : 3.0 / 4.0)
+        let size = fittedPreview(geometry.size)
         ZStack {
           Color.black
-          viewfinder(size: size, landscape: landscape)
+          viewfinder(size: size, angle: angle)
           if grid {
             ThirdsGrid().stroke(.white.opacity(0.35), lineWidth: 0.6).allowsHitTesting(false)
+          }
+          if let focusMarker {
+            RoundedRectangle(cornerRadius: 4)
+              .strokeBorder(Color.yellow, lineWidth: 1.5)
+              .frame(width: 52, height: 52)
+              .position(focusMarker)
+              .allowsHitTesting(false)
+              .accessibilityHidden(true)
           }
           if model.countdown > 0 {
             Text("\(model.countdown)").font(.system(size: 72, weight: .light)).foregroundColor(
@@ -139,7 +156,7 @@ struct CameraScreen: View {
             Text(String(format: "%g×", value)).font(.system(size: 14)).frame(width: 42, height: 34)
               .background(abs(model.zoom - value) < 0.05 ? p.ink : .clear)
               .foregroundColor(abs(model.zoom - value) < 0.05 ? p.panel : p.muted).clipShape(
-                Capsule())
+                Capsule()).rotationEffect(.degrees(-angle))
           }.accessibilityLabel(model.zoomAccessibilityLabel(value))
         }
         Spacer()
@@ -148,6 +165,7 @@ struct CameraScreen: View {
         } label: {
           Text(String(format: "%+.1f EV", model.exposureEv)).font(.system(size: 12)).frame(
             width: 76, height: 44)
+            .rotationEffect(.degrees(-angle))
         }
         .accessibilityLabel(L10n.text("exposure_compensation")).disabled(!model.exposureSupported)
       }.padding(.horizontal, 12).frame(height: 44).disabled(model.busy)
@@ -159,6 +177,7 @@ struct CameraScreen: View {
             CaptureResultButton(image: model.resultImage, openGallery: { openGallery(.grid) },
                                 openLatest: { openGallery(.latest) })
           }.frame(width: 48, height: 48).clipped().clipShape(RoundedRectangle(cornerRadius: 7))
+            .rotationEffect(.degrees(-angle))
             .padding(3).overlay(RoundedRectangle(cornerRadius: 9).stroke(p.line, lineWidth: 1))
             .frame(width: side)
           Button {
@@ -182,37 +201,22 @@ struct CameraScreen: View {
   }
 
   @ViewBuilder
-  private func viewfinder(size: CGSize, landscape: Bool) -> some View {
+  private func viewfinder(size: CGSize, angle: Double) -> some View {
 #if targetEnvironment(simulator)
     if model.usesSampleViewfinder, let film = model.film, let root = Bundle.main.resourceURL,
        let image = UIImage(contentsOfFile: root.appendingPathComponent(film.sampleAssetPath).path) {
+      let sideways = abs(angle) == 90
       Image(uiImage: image).resizable().scaledToFill()
-        .frame(width: size.width, height: size.height).clipped()
+        .frame(width: sideways ? size.height : size.width, height: sideways ? size.width : size.height)
+        .clipped().rotationEffect(.degrees(-angle))
+        .frame(width: size.width, height: size.height)
         .accessibilityLabel(L10n.text("sample_description", film.title))
     } else {
-      rotatedLiveViewfinder(size: size, landscape: landscape)
+      liveViewfinder
     }
 #else
-    rotatedLiveViewfinder(size: size, landscape: landscape)
+    liveViewfinder
 #endif
-  }
-
-  private func rotatedLiveViewfinder(size: CGSize, landscape: Bool) -> some View {
-    ZStack {
-      liveViewfinder
-      if let focusMarker {
-        RoundedRectangle(cornerRadius: 4)
-          .strokeBorder(Color.yellow, lineWidth: 1.5)
-          .frame(width: 52, height: 52)
-          .position(focusMarker)
-          .allowsHitTesting(false)
-          .accessibilityHidden(true)
-      }
-    }
-    .frame(width: landscape ? size.height : size.width,
-           height: landscape ? size.width : size.height)
-    .rotationEffect(.degrees(previewAngle(landscape: landscape)))
-    .frame(width: size.width, height: size.height)
   }
 
   @ViewBuilder
@@ -254,7 +258,8 @@ struct CameraScreen: View {
       Image(systemName: icon).font(.system(size: 18)).frame(width: 44, height: 44)
     }.accessibilityLabel(label)
   }
-  private func fittedPreview(_ available: CGSize, aspect: CGFloat) -> CGSize {
+  private func fittedPreview(_ available: CGSize) -> CGSize {
+    let aspect: CGFloat = 3.0 / 4.0
     let width = min(available.width, available.height * aspect)
     return CGSize(width: max(1, width), height: max(1, width / aspect))
   }

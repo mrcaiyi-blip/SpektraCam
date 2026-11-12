@@ -1,40 +1,53 @@
 package org.spektracam;
 
+import android.app.AlertDialog;
 import android.content.Context;
+import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.util.TypedValue;
 import java.io.IOException;
 import java.io.InputStream;
 import android.view.*;
 import android.widget.*;
 import java.util.*;
 
-/** Full-screen route. Film state stays pending until the bottom-right return. */
+/** Full-screen route. The film, paper and border settings are applied together on return. */
 final class FilmChooserView extends LinearLayout {
   interface Listener {
-    void selected(FilmLook film);
+    void selected(FilmLook film, FilmBorder border, FilmBorder.TextSettings borderText);
   }
 
   private final CameraUi ui;
   private final List<FilmLook> cameras;
   private final Listener listener;
+  private FilmBorder.TextSettings borderText;
   private FilmLook film;
+  private FilmBorder border;
   private int category = R.string.all_films;
-  private final LinearLayout info, filters, strip, printRow, printStrip;
+  private final LinearLayout info, filters, strip, printRow, printStrip, borderRow, borderStrip, borderTextRow, footer;
+  private final Button borderTextButton;
   private final ImageView sample;
   private final TextView sampleTitle;
   private final HorizontalScrollView cameraScroll;
   private final HorizontalScrollView printScroll;
   private final TextView printLabel;
+  private Bitmap sampleBitmap;
+  private String sampleAsset;
 
   FilmChooserView(
       Context c,
       List<FilmLook> cameras,
       FilmLook selected,
+      FilmBorder selectedBorder,
+      FilmBorder.TextSettings borderText,
       Listener listener) {
     super(c);
     this.ui = new CameraUi(c);
     this.cameras = cameras;
     this.film = selected;
+    this.border = selectedBorder;
+    this.borderText = borderText;
     this.listener = listener;
     setOrientation(VERTICAL);
     setBackgroundColor(ui.panel);
@@ -60,6 +73,27 @@ final class FilmChooserView extends LinearLayout {
     printScroll.addView(printStrip, new FrameLayout.LayoutParams(-2, -1));
     printRow.addView(printScroll, new LayoutParams(0, -1, 1));
     addView(printRow, new LayoutParams(-1, ui.dp(44)));
+    borderRow = new LinearLayout(c);
+    borderRow.setGravity(Gravity.CENTER_VERTICAL);
+    borderRow.setPadding(ui.dp(20), 0, ui.dp(20), 0);
+    LayoutParams borderLabelParams = new LayoutParams(-2, -2);
+    borderLabelParams.rightMargin = ui.dp(10);
+    borderRow.addView(ui.text(c.getString(R.string.film_border), 13, ui.muted), borderLabelParams);
+    borderStrip = new LinearLayout(c);
+    borderStrip.setGravity(Gravity.CENTER_VERTICAL);
+    borderRow.addView(borderStrip, new LayoutParams(0, -1, 1));
+    addView(borderRow, new LayoutParams(-1, ui.dp(52)));
+    borderTextRow = new LinearLayout(c);
+    borderTextRow.setGravity(Gravity.CENTER_VERTICAL);
+    borderTextRow.setPadding(ui.dp(20), 0, ui.dp(20), 0);
+    borderTextRow.addView(ui.text(c.getString(R.string.film_border_text), 13, ui.muted),
+        new LayoutParams(0, -2, 1));
+    borderTextButton = ui.button("");
+    borderTextButton.setBackground(ui.shape(ui.bg, 7, ui.line));
+    borderTextButton.setOnClickListener(view -> showBorderTextMenu());
+    borderTextRow.addView(borderTextButton, new LayoutParams(-2, ui.dp(32)));
+    addView(borderTextRow, new LayoutParams(-1, ui.dp(44)));
+    updateBorderTextButton();
     LinearLayout sampleArea = new LinearLayout(c);
     sampleArea.setOrientation(VERTICAL);
     sampleArea.setPadding(ui.dp(20), ui.dp(8), ui.dp(20), 0);
@@ -82,7 +116,7 @@ final class FilmChooserView extends LinearLayout {
     strip.setPadding(ui.dp(20), 0, ui.dp(12), ui.dp(8));
     cameraScroll.addView(strip, new LayoutParams(-2, -1));
     addView(cameraScroll, new LayoutParams(-1, ui.dp(100)));
-    LinearLayout footer = new LinearLayout(c);
+    footer = new LinearLayout(c);
     footer.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
     footer.setPadding(ui.dp(20), 0, ui.dp(20), 0);
     footer.setBackgroundColor(ui.panel);
@@ -91,11 +125,12 @@ final class FilmChooserView extends LinearLayout {
     done.setBackground(ui.shape(ui.ink, 10, 0));
     done.setContentDescription(getContext().getString(R.string.return_to_camera));
     done.setTag("camera-chooser-return");
-    done.setOnClickListener(v -> listener.selected(film));
+    done.setOnClickListener(v -> listener.selected(film, border, this.borderText));
     footer.addView(done, new LayoutParams(ui.dp(106), ui.dp(44)));
     addView(footer, new LayoutParams(-1, ui.dp(56)));
     drawDetails();
     drawPrints();
+    drawBorders();
     drawFilters();
     drawCameras();
     cameraScroll.post(
@@ -115,15 +150,22 @@ final class FilmChooserView extends LinearLayout {
   protected void onSizeChanged(int w, int h, int oldw, int oldh) {
     super.onSizeChanged(w, h, oldw, oldh);
     boolean compact = h < ui.dp(500);
-    int[] indices = {0, 1, 3, 4};
-    int[] heights = {compact ? 60 : 85, compact ? 36 : 44, compact ? 40 : 44, compact ? 86 : 100};
-    for (int i = 0; i < indices.length; i++) {
-      View child = getChildAt(indices[i]);
-      LayoutParams p = (LayoutParams) child.getLayoutParams();
-      if (p.height != ui.dp(heights[i])) {
-        p.height = ui.dp(heights[i]);
-        child.setLayoutParams(p);
-      }
+    info.setPadding(ui.dp(20), ui.dp(compact ? 0 : 12), ui.dp(20), ui.dp(compact ? 0 : 10));
+    setHeight(info, compact ? 48 : 85);
+    setHeight(printRow, compact ? 36 : 44);
+    setHeight(borderRow, compact ? 44 : 52);
+    setHeight(borderTextRow, compact ? 36 : 44);
+    setHeight(sampleTitle, compact ? 20 : 30);
+    setHeight(filters, compact ? 36 : 44);
+    setHeight(cameraScroll, compact ? 64 : 100);
+    setHeight(footer, compact ? 44 : 56);
+  }
+
+  private void setHeight(View view, int height) {
+    LayoutParams params = (LayoutParams) view.getLayoutParams();
+    if (params.height != ui.dp(height)) {
+      params.height = ui.dp(height);
+      view.setLayoutParams(params);
     }
   }
 
@@ -139,12 +181,7 @@ final class FilmChooserView extends LinearLayout {
     p.leftMargin = ui.dp(14);
     info.addView(text, p);
     text.addView(ui.text(film.title, 20, ui.ink));
-    if (film.prints.isEmpty()) text.addView(ui.text(film.finishTitle(getContext()), 12, ui.muted));
-    try (InputStream image = getContext().getAssets().open(film.sampleAsset())) {
-      sample.setImageBitmap(BitmapFactory.decodeStream(image));
-    } catch (IOException error) {
-      sample.setImageDrawable(new CameraUi.Glyph("film", ui.muted));
-    }
+    drawSample();
     String caption = getContext().getString(R.string.sample_caption, film.title, film.finishTitle(getContext()));
     sample.setContentDescription(caption);
     sampleTitle.setText(caption);
@@ -152,11 +189,14 @@ final class FilmChooserView extends LinearLayout {
 
   private void drawPrints() {
     printStrip.removeAllViews();
-    printRow.setVisibility(film.prints.isEmpty() ? GONE : VISIBLE);
-    if (film.prints.isEmpty()) return;
     boolean cinema = film.category == R.string.motion_picture_negative;
     String label = getContext().getString(cinema ? R.string.print_film : R.string.print_paper);
     printLabel.setText(label);
+    if (film.prints.isEmpty()) {
+      printStrip.addView(ui.text(film.finishTitle(getContext()), 13, ui.muted));
+      printScroll.scrollTo(0, 0);
+      return;
+    }
     for (FilmLook.Print paper : film.prints) {
       TextView chip = ui.text(paper.title(), 13, ui.ink);
       chip.setSingleLine(true);
@@ -178,6 +218,116 @@ final class FilmChooserView extends LinearLayout {
     View selected = printStrip.findViewWithTag(film.paper);
     if (selected != null) printScroll.post(() -> printScroll.scrollTo(
         selected.getLeft() - (printScroll.getWidth() - selected.getWidth()) / 2, 0));
+  }
+
+  private void drawSample() {
+    String asset = film.sampleAsset();
+    if (!asset.equals(sampleAsset)) {
+      sampleAsset = asset;
+      try (InputStream image = getContext().getAssets().open(asset)) {
+        sampleBitmap = BitmapFactory.decodeStream(image);
+      } catch (IOException error) {
+        sampleBitmap = null;
+      }
+    }
+    if (sampleBitmap == null) sample.setImageDrawable(new CameraUi.Glyph("film", ui.muted));
+    else sample.setImageBitmap(border.preview(sampleBitmap, borderText.caption(border, film.title)));
+  }
+
+  private void showBorderTextMenu() {
+    PopupMenu popup = new PopupMenu(getContext(), borderTextButton, Gravity.END);
+    for (FilmBorder.TextMode mode : FilmBorder.TextMode.values()) {
+      popup.getMenu().add(0, mode.ordinal(), mode.ordinal(), mode.label)
+          .setCheckable(true).setChecked(mode == borderText.mode());
+    }
+    popup.setOnMenuItemClickListener(item -> {
+      FilmBorder.TextMode mode = FilmBorder.TextMode.values()[item.getItemId()];
+      if (mode == FilmBorder.TextMode.CUSTOM) editBorderText();
+      else selectBorderText(mode, borderText.custom());
+      return true;
+    });
+    popup.show();
+  }
+
+  private void editBorderText() {
+    Context context = getContext();
+    EditText field = new EditText(context);
+    field.setSingleLine(true);
+    field.setHint(R.string.film_border_text_placeholder);
+    field.setText(borderText.custom());
+    field.setSelection(field.length());
+    FrameLayout input = new FrameLayout(context);
+    input.setPadding(ui.dp(20), 0, ui.dp(20), 0);
+    input.addView(field, new FrameLayout.LayoutParams(-1, -2));
+    AlertDialog dialog = new AlertDialog.Builder(context)
+        .setTitle(R.string.film_border_text)
+        .setView(input)
+        .setNegativeButton(R.string.cancel, null)
+        .setPositiveButton(R.string.done, (d, button) ->
+            selectBorderText(FilmBorder.TextMode.CUSTOM, field.getText().toString()))
+        .create();
+    field.requestFocus();
+    if (dialog.getWindow() != null) {
+      dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
+    }
+    dialog.show();
+  }
+
+  private void selectBorderText(FilmBorder.TextMode mode, String custom) {
+    FilmBorder.TextSettings next = new FilmBorder.TextSettings(mode, custom);
+    if (next.equals(borderText)) return;
+    borderText = next;
+    updateBorderTextButton();
+    drawSample();
+  }
+
+  private void updateBorderTextButton() {
+    String mode = getContext().getString(borderText.mode().label);
+    borderTextButton.setText(mode + "  ▾");
+    borderTextButton.setContentDescription(getContext().getString(R.string.film_border_text) + " · " + mode);
+  }
+
+  private void drawBorders() {
+    for (FilmBorder option : FilmBorder.values()) {
+      LinearLayout choice = new LinearLayout(getContext());
+      choice.setOrientation(VERTICAL);
+      choice.setGravity(Gravity.CENTER);
+      choice.setTag("film-border-" + option.id);
+      choice.setContentDescription(getContext().getString(option.label));
+      choice.setFocusable(true);
+      View swatch = new View(getContext()) {
+        @Override protected void onDraw(Canvas canvas) {
+          option.drawSwatch(canvas, getWidth(), getHeight());
+        }
+      };
+      choice.addView(swatch, new LayoutParams(ui.dp(31), ui.dp(20)));
+      TextView name = ui.text(getContext().getString(option.label), 11, ui.ink);
+      name.setMaxLines(1);
+      name.setGravity(Gravity.CENTER);
+      name.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
+      name.setAutoSizeTextTypeUniformWithConfiguration(9, 11, 1, TypedValue.COMPLEX_UNIT_SP);
+      choice.addView(name, new LayoutParams(-1, ui.dp(17)));
+      LayoutParams params = new LayoutParams(0, -1, 1);
+      if (option != FilmBorder.NONE) params.leftMargin = ui.dp(5);
+      params.topMargin = params.bottomMargin = ui.dp(1);
+      borderStrip.addView(choice, params);
+      choice.setOnClickListener(view -> {
+        if (border == option) return;
+        border = option;
+        updateBorderSelection();
+        drawSample();
+      });
+    }
+    updateBorderSelection();
+  }
+
+  private void updateBorderSelection() {
+    for (int index = 0; index < borderStrip.getChildCount(); index++) {
+      View choice = borderStrip.getChildAt(index);
+      boolean selected = ("film-border-" + border.id).equals(choice.getTag());
+      choice.setSelected(selected);
+      choice.setBackground(ui.shape(selected ? ui.soft : ui.bg, 8, selected ? ui.ink : ui.line));
+    }
   }
 
   private void updatePrintSelection() {

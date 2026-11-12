@@ -8,6 +8,7 @@ struct GalleryPhoto: Codable, Identifiable, Sendable {
     let date: Date
     let primary: String
     let secondary: String
+    var borderID: String?
     var photosIdentifier: String?
     var systemOnly: Bool?
 
@@ -21,8 +22,8 @@ enum CaptureArchive {
             .appendingPathComponent("CaptureGallery", isDirectory: true)
     }
 
-    static func save(_ jpeg: Data, primary: String, secondary: String) throws -> GalleryPhoto {
-        let photo = GalleryPhoto(id: UUID(), date: Date(), primary: primary, secondary: secondary)
+    static func save(_ jpeg: Data, primary: String, secondary: String, border: FilmBorder) throws -> GalleryPhoto {
+        let photo = GalleryPhoto(id: UUID(), date: Date(), primary: primary, secondary: secondary, borderID: border.rawValue)
         let manager = FileManager.default
         try manager.createDirectory(at: root, withIntermediateDirectories: true)
         let staging = root.appendingPathComponent(".\(photo.id.uuidString)", isDirectory: true)
@@ -489,6 +490,9 @@ struct CaptureGalleryScreen: View {
                     VStack(alignment: .leading, spacing: 5) {
                         Text(primaryLabel + " · " + L10n.photoLabel(photo.primary))
                         Text(secondaryLabel + " · " + L10n.photoLabel(photo.secondary))
+                        if let borderID = photo.borderID, let border = FilmBorder(rawValue: borderID) {
+                            Text(L10n.text("film_border") + " · " + border.title)
+                        }
                     }.font(.subheadline).frame(maxWidth: .infinity, alignment: .leading)
                         .padding(16).background(.black.opacity(0.7))
                 }.disabled(deleting || sharing)

@@ -278,7 +278,11 @@ public final class CaptureGalleryActivity extends LocalizedActivity {
         useCachedDetail(photo);
         displayedPreview = detailPreviews.get(photo);
         detailImage.setPhoto(displayedPreview);
-        metadata.setText(getString(R.string.photo_metadata, known(photo.primary), known(photo.secondary)));
+        String description = getString(R.string.photo_metadata, known(photo.primary), known(photo.secondary));
+        if (photo.border != null) {
+            description += "\n" + getString(R.string.photo_border_metadata, getString(photo.border.label));
+        }
+        metadata.setText(description);
         updateDetailPages();
     }
 

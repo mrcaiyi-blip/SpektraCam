@@ -110,6 +110,17 @@
 "preview_failed" = "Live preview is unavailable.";
 "print_film" = "Print film";
 "print_paper" = "Paper";
+"film_border" = "Border";
+"film_border_none" = "No border";
+"film_border_print" = "Print edge";
+"film_border_strip" = "135 strip";
+"film_border_instant" = "Instant";
+"film_border_text" = "Border text";
+"film_border_text_default" = "Default";
+"film_border_text_hidden" = "Hidden";
+"film_border_text_film" = "Film name";
+"film_border_text_custom" = "Custom";
+"film_border_text_placeholder" = "Enter border text";
 "privacy" = "Privacy";
 "privacy_policy" = "Privacy Policy";
 "profile_license" = "Film profile license";
@@ -132,7 +143,7 @@
 "read_raw_buffer" = "Could not read the RAW buffer.";
 "reset" = "Reset";
 "resource_directory" = "The film resource directory is unavailable.";
-"return_to_camera" = "Apply film and return to the camera";
+"return_to_camera" = "Apply selection and return to the camera";
 "reversal_short" = "Reversal";
 "sample_caption" = "%1$@ · %2$@ · Color preview";
 "sample_description" = "%@ color preview";
@@ -142,6 +153,9 @@
 "saved_app_system_failed" = "Saved in the app gallery. Could not save to the system photo library.";
 "settings" = "Settings";
 "settings_title" = "Settings";
+"capture_settings" = "Capture";
+"shutter_sound" = "Shutter Sound";
+"shutter_sound_unavailable" = "iOS controls the shutter sound on this device.";
 "share_failed" = "Could not share the photo.";
 "share_photo" = "Share photo";
 "single_raw" = "Single RAW";
